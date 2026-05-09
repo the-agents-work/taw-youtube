@@ -2,6 +2,10 @@
 
 > Hear any YouTube video in your language. Live AI dubbing, runs on your own [Kyma](https://kymaapi.com) key.
 
+<p align="center">
+  <img src="store-assets/screenshots/01-popup.png" alt="Echoly popup" width="380">
+</p>
+
 Chrome MV3 extension that overlays a live AI voice-over onto any YouTube video. Two tiers:
 
 - **Realtime** — WebRTC P2P, sub-second lag, 9 OpenAI voices or auto-clone of the speaker. ~$0.46 / 10 min.

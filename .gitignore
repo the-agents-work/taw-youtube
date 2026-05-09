@@ -3,5 +3,4 @@ node_modules/
 *.swp
 Thumbs.db
 *.zip
-store-assets/screenshots/
 store-assets/_*
