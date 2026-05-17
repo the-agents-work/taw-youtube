@@ -7,7 +7,7 @@
 
 (() => {
   // ───── F9 — Idempotent version guard ──────────────────────────────────────
-  const ECHOLY_VERSION = "0.2.1";
+  const ECHOLY_VERSION = "0.5.2";
   const GLOBAL_KEY = "__echolyContentVersion";
   if (window[GLOBAL_KEY] === ECHOLY_VERSION) return;
   // Older copy may have left UI behind; clean up before re-installing listeners.
@@ -84,8 +84,23 @@
   let layout = loadLayout();
 
   // ───── Background channel ─────────────────────────────────────────────────
+  // Extension reload (dev mode update or Chrome auto-update) invalidates the
+  // content script's runtime handle. After that, sendMessage throws SYNC
+  // ("Extension context invalidated") — .catch() can't catch a sync throw,
+  // so wrap the whole call. Once invalidated we also stop emitting and tear
+  // down the overlay so the orphaned script doesn't keep firing.
+  let runtimeAlive = true;
   function notifyBackground(msg) {
-    chrome.runtime.sendMessage(msg).catch(() => {});
+    if (!runtimeAlive) return;
+    try {
+      const res = chrome.runtime?.id ? chrome.runtime.sendMessage(msg) : null;
+      if (res && typeof res.catch === "function") res.catch(() => {});
+    } catch (err) {
+      if (String(err?.message || err).includes("Extension context invalidated")) {
+        runtimeAlive = false;
+        try { handleUnload?.(); } catch {}
+      }
+    }
   }
   function emitState(partial) {
     notifyBackground({ type: "CONTENT_STATE", ...partial });
@@ -727,12 +742,34 @@
   }
 
   function applyVolumes(originalVolume, voiceVolume) {
-    if (videoEl) {
-      videoEl.volume = (originalVolume ?? 18) / 100;
-      videoEl.muted = (originalVolume ?? 0) === 0;
+    // Original audio (the YT video element itself). Locate it on-demand so
+    // the slider has effect even before the user clicks Start — without this
+    // the popup felt frozen pre-session. videoEl global is set during an
+    // active session; otherwise findVideo() pulls the live YT element.
+    const video = videoEl || (typeof findVideo === "function" ? findVideo() : null);
+    if (video) {
+      const vol = Math.max(0, Math.min(1, (originalVolume ?? 18) / 100));
+      video.volume = vol;
+      video.muted = vol === 0;
     }
-    if (session?.outputGain) {
-      session.outputGain.gain.value = computeGain(voiceVolume ?? 100);
+    // Voice (the translated dub). Web Audio GainNode with a brief ramp so
+    // rapid slider drags don't crackle. setValueAtTime + linearRampToValueAtTime
+    // is the documented way to schedule gain changes without pop artifacts.
+    // Only meaningful when a session is active and emitting dub audio.
+    if (session?.outputGain && session?.audioCtx) {
+      const target = computeGain(voiceVolume ?? 100);
+      const ctx = session.audioCtx;
+      const gain = session.outputGain.gain;
+      const now = ctx.currentTime;
+      try {
+        gain.cancelScheduledValues(now);
+        gain.setValueAtTime(gain.value, now);
+        gain.linearRampToValueAtTime(target, now + 0.04);
+      } catch {
+        // Older AudioContext implementations may reject scheduling — fall
+        // back to direct assignment which always works (just less smooth).
+        gain.value = target;
+      }
     } else if (session?.remoteAudio) {
       session.remoteAudio.volume = Math.min((voiceVolume ?? 100) / 100, 1.0);
       session.remoteAudio.muted = voiceVolume === 0;
@@ -897,8 +934,14 @@
       setOverlayState("live");
       emitState({ paused: false, status: "Translating" });
     };
+    const onYTEnded = () => {
+      stopSession("video-ended");
+      emitEnded("Video ended.");
+    };
     video.addEventListener("pause", onYTPause);
     video.addEventListener("play", onYTPlay);
+    video.addEventListener("ended", onYTEnded);
+    newSession._onEnded = onYTEnded;
 
     runChunkLoop(newSession);
     emitState({ running: true, paused: false, status: "Translating" });
@@ -1041,9 +1084,9 @@
     const voiceId = settings.standardVoice || STANDARD_DEFAULT_VOICE;
     const kymaKey = s.kymaKey;
 
-    // 1. Transcribe — gateway whitelist rejects webm/opus, so re-encode the
-    // recorder blob as 16 kHz mono WAV before upload. Reuses the playback
-    // AudioContext so we don't spin up a fresh decoder per chunk.
+    // Re-encode webm/opus blob → 16 kHz mono WAV. Kyma's audio gateway
+    // whitelists mp3/wav/m4a only; WAV is the simplest of the three to emit
+    // from MediaRecorder output via decode + resample.
     let wavBlob;
     try {
       wavBlob = await webmBlobToWav(blob, s.audioCtx);
@@ -1051,74 +1094,53 @@
       return;
     }
     if (s !== session || s.token !== t) return;
-    const fd = new FormData();
-    fd.append("file", wavBlob, "chunk.wav");
-    fd.append("model", "whisper-v3-turbo");
-    fd.append("response_format", "json");
-    let trResp;
+
+    // 1+2 COMBINED via Vertex Gemini Audio. /v1/audio/understand takes an
+    // audio file + a question and returns text — we prompt it to translate
+    // straight into the target language so we collapse the legacy 2-step
+    // pipeline (Whisper transcribe → Gemini chat translate) into one call.
+    // Wins: ~50% latency, ~50% cost, no more AI-Studio free-tier flakiness
+    // (Vertex SA route has project-level quota, see kyma-api/src/providers/
+    // google-vertex.ts). Wave 1 + Wave 2 of Vertex migration, 2026-05-16.
+    const durationSec = STANDARD_CHUNK_MS / 1000;
+    const understandFd = new FormData();
+    understandFd.append("file", wavBlob, "chunk.wav");
+    understandFd.append("model", "gemini-3-flash-audio");
+    understandFd.append("duration_sec", String(durationSec));
+    understandFd.append(
+      "question",
+      `Translate the spoken English in this audio into ${langName}. ` +
+      `Output ONLY the translated sentence(s) for live dubbing — no quotes, ` +
+      `no labels, no commentary, no transcription of the original. Preserve ` +
+      `names, brand names, and technical terms verbatim. If the audio is ` +
+      `silent or non-speech, output an empty string.`,
+    );
+    let auResp;
     try {
-      trResp = await fetch(`${KYMA_BASE}/audio/transcriptions`, {
+      auResp = await fetch(`${KYMA_BASE}/audio/understand`, {
         method: "POST",
         headers: { Authorization: "Bearer " + kymaKey },
-        body: fd,
+        body: understandFd,
         signal: s.abortController.signal,
       });
     } catch {
       return;  // network blip OR aborted via Stop; next chunk will recover
     }
     if (s !== session || s.token !== t) return;
-    if (!trResp.ok) {
-      const txt = await trResp.text().catch(() => "");
-      const parsed = parseKymaError(trResp.status, txt);
+    if (!auResp.ok) {
+      const txt = await auResp.text().catch(() => "");
+      const parsed = parseKymaError(auResp.status, txt);
       showStandardError(parsed);
       return;
     }
-    const tr = await trResp.json().catch(() => ({}));
-    const sourceText = String(tr.text || "").trim();
-    if (!sourceText || sourceText.length < 2) return;
-    currentSourceText = sourceText;
-    if (elements.source && settings.showSource) {
-      elements.source.textContent = sourceText.slice(-220);
-    }
-
-    // 2. Translate via gemini-2.5-flash. Strict prompt — no quotes/commentary —
-    // because anything extra goes straight into TTS as spoken words. Gemini
-    // Flash is the cheap+multilingual pick on Kyma; gpt-4o-mini isn't in the
-    // catalog (verified 2026-05-08).
-    let tlResp;
-    try {
-      tlResp = await fetch(`${KYMA_BASE}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer " + kymaKey,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gemini-2.5-flash",
-          messages: [
-            {
-              role: "system",
-              content: `You are a live dubbing translator. Translate the user's sentence into ${langName}. Output ONLY the translation. No quotes, no commentary, no explanation, no labels. Preserve names, brand names, and technical terms verbatim.`,
-            },
-            { role: "user", content: sourceText },
-          ],
-          temperature: 0.2,
-        }),
-        signal: s.abortController.signal,
-      });
-    } catch {
-      return;
-    }
-    if (s !== session || s.token !== t) return;
-    if (!tlResp.ok) {
-      const txt = await tlResp.text().catch(() => "");
-      const parsed = parseKymaError(tlResp.status, txt);
-      showStandardError(parsed);
-      return;
-    }
-    const tl = await tlResp.json().catch(() => ({}));
-    const targetText = String(tl?.choices?.[0]?.message?.content || "").trim();
-    if (!targetText) return;
+    const au = await auResp.json().catch(() => ({}));
+    const targetText = String(au?.answer || "").trim();
+    if (!targetText || targetText.length < 2) return;
+    // Source text is no longer surfaced separately by the audio-understand
+    // path. Keep the source caption pane (settings.showSource) backed by
+    // YouTube's own native captions via the existing startCaptionPoll loop —
+    // that's the original behavior before Whisper transcription was wired
+    // into the side pane.
     currentTargetText = targetText;
     setTargetText(targetText);
     setOverlayState("live");
@@ -1182,6 +1204,680 @@
     showToast(parsed.user, { cta: parsed.cta, ctaLabel: parsed.ctaLabel }, 6000);
   }
 
+  // ───── Subtitle-first tier (CC fetch → batch translate → batch TTS) ───────
+  // Pre-fetches the platform caption track (YouTube only in v0.3), batches the
+  // whole transcript through Gemini in one shot, then renders MiniMax TTS in
+  // rolling waves and schedules playback at exact caption timestamps. Zero
+  // chase delay (cf. Standard chunked pipeline ~5s lag) when CC is available.
+  //
+  // Fallback chain (see startSession router): subtitle-first → standard chunk.
+  const SUBFIRST_BATCH_SIZE = 10;        // sentences per translate request
+  const SUBFIRST_LOOKAHEAD_MS = 30_000;  // render this far ahead of playhead
+  const SUBFIRST_RENDER_CONCURRENCY = 5; // parallel TTS workers
+  const SUBFIRST_GAP_MS = 1500;          // sentence boundary if inter-cue gap > this
+  const SUBFIRST_MAX_WORDS = 15;         // OR cumulative words > this
+
+  function getYouTubeVideoId() {
+    try {
+      const u = new URL(location.href);
+      const v = u.searchParams.get("v");
+      if (v) return v;
+      const m = u.pathname.match(/\/embed\/([^/?]+)/);
+      if (m) return m[1];
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  // CC button selectors — keep multiple as fallbacks for YT UI rewrites.
+  const YT_CC_BUTTON_SELECTORS = [
+    "button.ytp-subtitles-button",
+    ".ytp-chrome-controls .ytp-subtitles-button",
+    'button[aria-label*="captions" i]',
+    'button[aria-label*="subtitle" i]',
+  ];
+
+  function findYTCCButton() {
+    for (const sel of YT_CC_BUTTON_SELECTORS) {
+      const btn = document.querySelector(sel);
+      if (btn) return btn;
+    }
+    return null;
+  }
+
+  // Toggling YT's own CC button forces YouTube to fire its internal
+  // /api/timedtext request with a full-auth signed URL. Background's
+  // webRequest listener captures that URL by videoId. We later restore the
+  // button to its original state so the user's CC visibility preference is
+  // preserved.
+  function triggerYTCCLoad() {
+    const btn = findYTCCButton();
+    if (!btn) return { triggered: false, wasOff: false };
+    const wasOff = btn.getAttribute("aria-pressed") !== "true";
+    if (wasOff) {
+      try { btn.click(); } catch { return { triggered: false, wasOff }; }
+    }
+    return { triggered: true, wasOff };
+  }
+
+  function restoreYTCCButton(wasOff) {
+    if (!wasOff) return;
+    const btn = findYTCCButton();
+    if (btn && btn.getAttribute("aria-pressed") === "true") {
+      try { btn.click(); } catch {}
+    }
+  }
+
+  // Layer 1: ask background for the most recently observed timedtext URL
+  // for this video. If none yet, trigger YT's CC button and poll. Returns
+  // { url, lang, kind, isAsr, tlang } or null on timeout.
+  async function fetchCCViaIntercept(videoId, signal, timeoutMs = 1800) {
+    const askBg = () => new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(
+          { type: "GET_YT_CC_URL", videoId },
+          (reply) => resolve(reply && reply.ok ? reply : null),
+        );
+      } catch { resolve(null); }
+    });
+
+    // First peek — user may already have CC on (warm cache, no UI flicker).
+    let entry = await askBg();
+    if (entry?.url) return entry;
+    if (signal?.aborted) return null;
+
+    // Cold cache: nudge YT to load CC, then poll.
+    const { triggered, wasOff } = triggerYTCCLoad();
+    if (!triggered) return null;
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      await new Promise((r) => setTimeout(r, 100));
+      if (signal?.aborted) { restoreYTCCButton(wasOff); return null; }
+      entry = await askBg();
+      if (entry?.url) {
+        restoreYTCCButton(wasOff);
+        return entry;
+      }
+    }
+    restoreYTCCButton(wasOff);
+    return null;
+  }
+
+  // YouTube tightened the public timedtext API end-2024 — plain URLs like
+  // `?lang=en&v=ID&fmt=json3` now return HTTP 200 with empty body for most
+  // videos. The signed URLs (with `signature`, `expire`, `sparams` params)
+  // live inside `ytInitialPlayerResponse.captions.playerCaptionsTracklist
+  // Renderer.captionTracks[].baseUrl` on the watch page itself. We parse
+  // that from the inline <script> in the DOM and append `&fmt=json3` to
+  // get JSON events back. Verified 2026-05-16 against Paul Graham's YC
+  // talk where the plain URL returned 0 bytes but the signed URL works.
+  function readPlayerResponseFromDom() {
+    // ytInitialPlayerResponse is set by YouTube inside a top-level
+    // `<script>` tag near the end of <head>. Content scripts run in an
+    // isolated world so we can't read window.ytInitialPlayerResponse,
+    // but we CAN read the script text via querySelector.
+    const scripts = document.querySelectorAll("script");
+    for (const s of scripts) {
+      const t = s.textContent;
+      if (!t || !t.includes("ytInitialPlayerResponse")) continue;
+      const m = t.match(/ytInitialPlayerResponse\s*=\s*(\{[\s\S]+?\})\s*;\s*(?:var|<\/script>|window\.|$)/);
+      if (!m) continue;
+      try {
+        return JSON.parse(m[1]);
+      } catch {
+        // Some pages serialize with trailing chars before ;. Try a more
+        // lenient parser: balanced-brace scan from match start.
+        const raw = m[1];
+        let depth = 0;
+        let end = -1;
+        for (let i = 0; i < raw.length; i++) {
+          const c = raw[i];
+          if (c === "{") depth++;
+          else if (c === "}") { depth--; if (depth === 0) { end = i + 1; break; } }
+        }
+        if (end > 0) {
+          try { return JSON.parse(raw.slice(0, end)); } catch {}
+        }
+      }
+    }
+    return null;
+  }
+
+  function pickCaptionTrack(tracks, targetLang) {
+    if (!Array.isArray(tracks) || tracks.length === 0) return null;
+    const targetCode = (targetLang || "").toLowerCase().split("-")[0];
+    const score = (t) => {
+      const code = (t.languageCode || "").toLowerCase().split("-")[0];
+      let s = 0;
+      // Native target-lang track is gold (human-translated subs)
+      if (code === targetCode) s += 100;
+      // English source most often available + best translation source
+      if (code === "en") s += 50;
+      // Manual > ASR (manual has no `kind`, ASR has kind: "asr")
+      if (!t.kind || t.kind !== "asr") s += 10;
+      return s;
+    };
+    return [...tracks].sort((a, b) => score(b) - score(a))[0];
+  }
+
+  async function fetchYouTubeCaptions(videoId, targetLang, signal) {
+    // Layer 1: webRequest-intercepted URL (most reliable). Background catches
+    // the timedtext URL whenever YouTube itself fetches it; we trigger that
+    // fetch by toggling YT's own CC button if it isn't already on.
+    try {
+      const entry = await fetchCCViaIntercept(videoId, signal);
+      if (entry?.url) {
+        const url = entry.url + (entry.url.includes("fmt=") ? "" : "&fmt=json3");
+        const res = await fetch(url, { credentials: "include", signal });
+        if (res.ok) {
+          const json = await res.json().catch(() => null);
+          const captions = parseJson3Events(json?.events || []);
+          if (captions.length > 0) {
+            return { captions, sourceUrl: url, lang: entry.lang, kind: entry.kind, source: "intercept" };
+          }
+        }
+      }
+    } catch (e) {
+      if (signal?.aborted) return null;
+      // Fall through to Layer 2.
+    }
+
+    // Layer 2: pre-signed baseUrl from page's ytInitialPlayerResponse.
+    const pr = readPlayerResponseFromDom();
+    const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    const picked = pickCaptionTrack(tracks, targetLang);
+    if (picked?.baseUrl) {
+      const url = picked.baseUrl + (picked.baseUrl.includes("fmt=") ? "" : "&fmt=json3");
+      try {
+        const res = await fetch(url, { credentials: "include", signal });
+        if (res.ok) {
+          const json = await res.json().catch(() => null);
+          const captions = parseJson3Events(json?.events || []);
+          if (captions.length > 0) {
+            return { captions, sourceUrl: url, lang: picked.languageCode, kind: picked.kind || null };
+          }
+        }
+      } catch {
+        if (signal?.aborted) return null;
+      }
+    }
+    // Layer 3: plain URL pattern. Most videos return empty today but some
+    // legacy/embedded contexts still work, and it costs ~200ms.
+    const base = "https://www.youtube.com/api/timedtext";
+    const v = encodeURIComponent(videoId);
+    const lang = encodeURIComponent(targetLang || "vi");
+    const fallbackUrls = [
+      `${base}?lang=en&v=${v}&fmt=json3`,
+      `${base}?lang=${lang}&v=${v}&fmt=json3`,
+      `${base}?lang=en&v=${v}&fmt=json3&kind=asr`,
+    ];
+    for (const url of fallbackUrls) {
+      try {
+        const res = await fetch(url, { credentials: "include", signal });
+        if (!res.ok) continue;
+        const json = await res.json().catch(() => null);
+        const captions = parseJson3Events(json?.events || []);
+        if (captions.length > 0) return { captions, sourceUrl: url };
+      } catch {
+        if (signal?.aborted) return null;
+      }
+    }
+    return null;
+  }
+
+  function parseJson3Events(events) {
+    const out = [];
+    for (const e of events) {
+      if (!e?.segs || typeof e.tStartMs !== "number") continue;
+      const text = e.segs.map((s) => s.utf8 || "").join("").replace(/\s+/g, " ").trim();
+      if (!text || text === "\n") continue;
+      const start = e.tStartMs / 1000;
+      const dur = (e.dDurationMs || 0) / 1000;
+      out.push({ start, end: start + dur, text });
+    }
+    return out;
+  }
+
+  // YouTube ASR emits 1-3 words per cue. Regrouping into sentence-shaped
+  // chunks gives the translator usable context and keeps TTS calls under
+  // ~15 words (cheaper, faster, more natural prosody).
+  //
+  // ASR sliding window often repeats trailing words across consecutive cues —
+  // e.g. cue A ends "the world how" and cue B starts "world how are you". A
+  // naive concat ("the world how world how are you") makes TTS read the
+  // duplicated chunk twice. mergeWithDedupe collapses the overlap by finding
+  // the longest matching suffix-of-A / prefix-of-B and dropping the duplicate
+  // tokens from B before joining.
+  function mergeWithDedupe(aText, bText) {
+    const aTokens = aText.split(/\s+/).filter(Boolean);
+    const bTokens = bText.split(/\s+/).filter(Boolean);
+    const maxOverlap = Math.min(aTokens.length, bTokens.length, 8);  // cap at 8 to avoid pathological
+    let overlap = 0;
+    for (let n = maxOverlap; n > 0; n--) {
+      const suffix = aTokens.slice(-n).map((s) => s.toLowerCase()).join(" ");
+      const prefix = bTokens.slice(0, n).map((s) => s.toLowerCase()).join(" ");
+      if (suffix === prefix) { overlap = n; break; }
+    }
+    const tail = bTokens.slice(overlap).join(" ");
+    return tail ? `${aText} ${tail}`.trim() : aText;
+  }
+
+  function regroupToSentences(captions) {
+    const out = [];
+    let acc = null;
+    for (const c of captions) {
+      if (!acc) { acc = { ...c }; continue; }
+      const gapMs = (c.start - acc.end) * 1000;
+      const endsSentence = /[.!?…。！？]$/.test(acc.text);
+      const tooLong = acc.text.split(/\s+/).length >= SUBFIRST_MAX_WORDS;
+      if (endsSentence || gapMs > SUBFIRST_GAP_MS || tooLong) {
+        out.push(acc);
+        acc = { ...c };
+      } else {
+        acc.text = mergeWithDedupe(acc.text, c.text);
+        acc.end = c.end;
+      }
+    }
+    if (acc) out.push(acc);
+    return out;
+  }
+
+  // Strict JSON-array request keeps alignment trivial — output[i] maps to
+  // input[i]. If Gemini misformats and lengths differ, we fall back to the
+  // English source for the unmapped slots so the user still hears something
+  // at that timestamp instead of silence.
+  async function batchTranslateSubtitles(sentences, langName, kymaKey, signal) {
+    const items = sentences.map((s) => s.text);
+    const prompt =
+      `Translate these ${items.length} subtitle lines to ${langName}. ` +
+      `Return ONLY a JSON object {"lines": [...]} with exactly ${items.length} ` +
+      `strings in the same order. Preserve names, brand names, and technical ` +
+      `terms verbatim. No commentary.\n\n` +
+      `Input: ${JSON.stringify(items)}`;
+    const res = await fetch(`${KYMA_BASE}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + kymaKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gemini-2.5-flash",
+        messages: [
+          { role: "system", content: "You translate subtitles for live dubbing. Output strict JSON only." },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+      }),
+      signal,
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw parseKymaError(res.status, txt);
+    }
+    const json = await res.json();
+    const raw = json?.choices?.[0]?.message?.content || "";
+    let translations = null;
+    try {
+      const parsed = JSON.parse(raw);
+      translations = Array.isArray(parsed)
+        ? parsed
+        : (parsed.lines || parsed.translations || parsed.items || Object.values(parsed)[0]);
+    } catch {
+      translations = raw.split("\n")
+        .map((s) => s.replace(/^\s*[-*\d.]+\s*/, "").trim())
+        .filter(Boolean);
+    }
+    if (!Array.isArray(translations)) translations = [];
+    return items.map((src, i) => {
+      const t = translations[i];
+      return (typeof t === "string" && t.trim()) ? t.trim() : src;
+    });
+  }
+
+  async function renderTTSForSentence(text, voiceId, kymaKey, audioCtx, signal) {
+    const res = await fetch(`${KYMA_BASE}/audio/speech`, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + kymaKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "minimax-speech-turbo",
+        input: text,
+        voice_id: voiceId,
+        response_format: "mp3",
+      }),
+      signal,
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw parseKymaError(res.status, txt);
+    }
+    const arrayBuf = await res.arrayBuffer();
+    return audioCtx.decodeAudioData(arrayBuf);
+  }
+
+  async function startSubtitleFirstSession() {
+    const video = findVideo();
+    if (!video) return { ok: false, error: "No video on this page." };
+    videoEl = video;
+
+    const videoId = getYouTubeVideoId();
+    if (!videoId) return { ok: false, error: "Could not detect YouTube video id." };
+
+    buildOverlay();
+    setStatusText("Loading captions");
+    setOverlayState("connecting");
+
+    let audioCtx, outputGain;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+      outputGain = audioCtx.createGain();
+      outputGain.gain.value = computeGain(settings.voiceVolume ?? 100);
+      outputGain.connect(audioCtx.destination);
+    } catch (err) {
+      removeOverlay();
+      return { ok: false, error: "AudioContext unavailable: " + err.message };
+    }
+
+    const token = ++pageToken;
+    const abortController = new AbortController();
+    const newSession = {
+      token,
+      type: "subtitle-first",
+      audioCtx,
+      outputGain,
+      stream: null,
+      remoteAudio: null,
+      pc: null,
+      dc: null,
+      kymaSessionId: null,
+      kymaKey: settings.kymaKey,
+      abortController,
+      // subtitle-first specific
+      sentences: [],          // [{start, end, text, _buffer?}] post-regrouping
+      translations: [],       // string[] aligned with sentences
+      pendingSources: [],     // scheduled AudioBufferSource[] for cleanup
+      audioOffset: 0,         // audioCtx.currentTime when video.currentTime = 0
+      renderCursor: 0,        // next sentence index to render in background loop
+      stopFlag: false,
+      _onSeeked: null,
+    };
+    session = newSession;
+
+    // Remember whether the video was playing so we can restore play state if
+    // anything below this point fails. Otherwise the user is left with a
+    // paused video and a Ready popup, with no obvious way to recover except
+    // clicking the YT play button.
+    const wasPlaying = !video.paused;
+    newSession.wasPlaying = wasPlaying;
+    const restorePlay = () => {
+      if (wasPlaying && video.paused) {
+        try { video.play().catch(() => {}); } catch {}
+      }
+    };
+
+    // Pause video while we fetch+translate+render the first 30s of dub.
+    try { video.pause(); } catch {}
+
+    let captionResult;
+    try {
+      captionResult = await fetchYouTubeCaptions(videoId, settings.targetLanguage, abortController.signal);
+    } catch {
+      captionResult = null;
+    }
+    if (token !== pageToken || newSession.stopFlag) {
+      try { audioCtx.close(); } catch {}
+      restorePlay();
+      return { ok: false, error: "Cancelled." };
+    }
+    if (!captionResult || captionResult.captions.length === 0) {
+      // No CC available — drop subtitle-first session, fall back to live chunked.
+      // Important: tear down the audio context BEFORE handing off, but DO NOT
+      // remove the overlay first (removeOverlay sets root=null, which would
+      // make the fallback toast a no-op in showToast). Instead let
+      // startStandardSession rebuild the overlay, then surface the toast.
+      try { audioCtx.close(); } catch {}
+      session = null;
+      pageToken += 1;  // invalidate the subtitle-first token before standard starts
+      removeOverlay();
+      const result = await startStandardSession();
+      if (result?.ok) {
+        // startStandardSession has rebuilt the overlay — toast lands on it.
+        // startStandardSession's captureWithRetry calls video.play() internally
+        // so we don't need restorePlay() here.
+        showToast("No captions for this video — using live mode (~5s lag)", 5000);
+      } else {
+        // Both subtitle-first and standard failed — restore play so user can
+        // at least keep watching the original.
+        restorePlay();
+      }
+      return result;
+    }
+
+    const sentences = regroupToSentences(captionResult.captions);
+    newSession.sentences = sentences;
+    newSession.translations = new Array(sentences.length);
+    setStatusText(`Translating ${sentences.length} lines`);
+
+    // First wave = whatever plays in the next SUBFIRST_LOOKAHEAD_MS from
+    // current playhead. For brand-new sessions playhead is usually 0 so this
+    // captures the first ~30s of dialogue.
+    const lookaheadSec = SUBFIRST_LOOKAHEAD_MS / 1000;
+    let firstWaveEnd = sentences.findIndex((s) => s.start > video.currentTime + lookaheadSec);
+    if (firstWaveEnd === -1) firstWaveEnd = sentences.length;
+    firstWaveEnd = Math.max(firstWaveEnd, Math.min(sentences.length, 5));
+
+    try {
+      await translateBatch(newSession, 0, firstWaveEnd);
+    } catch (err) {
+      if (token !== pageToken || newSession.stopFlag) {
+        try { audioCtx.close(); } catch {}
+        restorePlay();
+        return { ok: false, error: "Cancelled." };
+      }
+      session = null;
+      try { audioCtx.close(); } catch {}
+      removeOverlay();
+      restorePlay();
+      const msg = err?.user || String(err?.message || err);
+      return { ok: false, error: msg };
+    }
+    if (token !== pageToken || newSession.stopFlag) {
+      try { audioCtx.close(); } catch {}
+      restorePlay();
+      return { ok: false, error: "Cancelled." };
+    }
+
+    setStatusText("Preparing voices");
+    await renderWaveTTS(newSession, 0, firstWaveEnd);
+    if (token !== pageToken || newSession.stopFlag) {
+      try { audioCtx.close(); } catch {}
+      restorePlay();
+      return { ok: false, error: "Cancelled." };
+    }
+
+    newSession.audioOffset = audioCtx.currentTime - video.currentTime;
+    scheduleWindow(newSession, 0, firstWaveEnd);
+    newSession.renderCursor = firstWaveEnd;
+
+    setStatusText("Translating");
+    setOverlayState("live");
+    applyVolumes(settings.originalVolume, settings.voiceVolume);
+    applySourceVisibility();
+    startSessionTimer();
+
+    onYTPause = () => {
+      setStatusText("Paused");
+      setOverlayState("paused");
+      emitState({ paused: true, status: "Paused" });
+    };
+    onYTPlay = () => {
+      newSession.audioOffset = audioCtx.currentTime - video.currentTime;
+      setStatusText("Translating");
+      setOverlayState("live");
+      emitState({ paused: false, status: "Translating" });
+    };
+    const onYTSeeked = () => {
+      cancelPendingSources(newSession);
+      newSession.audioOffset = audioCtx.currentTime - video.currentTime;
+      scheduleAroundPlayhead(newSession);
+    };
+    // Auto-stop when the video reaches its natural end. Without this the
+    // rolling renderer keeps polling + the overlay sits "Translating" forever
+    // while the user has already moved on. Realtime tier (different session
+    // type) gets the same handler attached in buildRealtimeSession.
+    const onYTEnded = () => {
+      stopSession("video-ended");
+      emitEnded("Video ended.");
+    };
+    video.addEventListener("pause", onYTPause);
+    video.addEventListener("play", onYTPlay);
+    video.addEventListener("seeked", onYTSeeked);
+    video.addEventListener("ended", onYTEnded);
+    newSession._onSeeked = onYTSeeked;
+    newSession._onEnded = onYTEnded;
+
+    try { await video.play(); } catch {}
+    runRollingRenderer(newSession);
+    emitState({ running: true, paused: false, status: "Translating" });
+    return { ok: true };
+  }
+
+  async function translateBatch(s, startIdx, endIdx) {
+    const langName = LANG_NAME[settings.targetLanguage] || "Vietnamese";
+    for (let i = startIdx; i < endIdx; i += SUBFIRST_BATCH_SIZE) {
+      if (s !== session || s.stopFlag) return;
+      const sliceEnd = Math.min(i + SUBFIRST_BATCH_SIZE, endIdx);
+      const slice = s.sentences.slice(i, sliceEnd);
+      const translations = await batchTranslateSubtitles(slice, langName, s.kymaKey, s.abortController.signal);
+      if (s !== session || s.stopFlag) return;
+      for (let j = 0; j < translations.length; j++) s.translations[i + j] = translations[j];
+    }
+  }
+
+  async function renderWaveTTS(s, startIdx, endIdx) {
+    const voiceId = settings.standardVoice || STANDARD_DEFAULT_VOICE;
+    const queue = [];
+    for (let i = startIdx; i < endIdx; i++) {
+      if (s.sentences[i]?._buffer) continue;
+      if (!s.translations[i]) continue;
+      queue.push(i);
+    }
+    let cursor = 0;
+    const workers = Array.from({ length: SUBFIRST_RENDER_CONCURRENCY }, async () => {
+      while (cursor < queue.length) {
+        if (s !== session || s.stopFlag) return;
+        const idx = queue[cursor++];
+        try {
+          const buf = await renderTTSForSentence(
+            s.translations[idx], voiceId, s.kymaKey, s.audioCtx, s.abortController.signal,
+          );
+          if (s !== session || s.stopFlag) return;
+          s.sentences[idx]._buffer = buf;
+        } catch {
+          // Individual TTS failure leaves that one sentence silent; rest of
+          // the dub still plays. Don't abort the whole wave.
+        }
+      }
+    });
+    await Promise.all(workers);
+  }
+
+  function scheduleWindow(s, startIdx, endIdx) {
+    if (s !== session || !s.audioCtx) return;
+    const now = s.audioCtx.currentTime;
+    for (let i = startIdx; i < endIdx; i++) {
+      const sent = s.sentences[i];
+      const buf = sent?._buffer;
+      if (!buf) continue;
+      const at = s.audioOffset + sent.start;
+      // If we've already drifted past this cue's start by >0.5s, skip rather
+      // than blast a delayed line that clashes with the next one.
+      if (at < now - 0.5) continue;
+      const src = s.audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(s.outputGain);
+      try { src.start(Math.max(at, now + 0.02)); } catch { continue; }
+      src._sentenceIdx = i;
+      s.pendingSources.push(src);
+    }
+    updateLiveDisplay(s);
+  }
+
+  function scheduleAroundPlayhead(s) {
+    if (!videoEl) return;
+    const t = videoEl.currentTime;
+    let start = s.sentences.findIndex((sent) => sent.end >= t);
+    if (start === -1) return;
+    const lookaheadSec = SUBFIRST_LOOKAHEAD_MS / 1000;
+    let end = s.sentences.findIndex((sent) => sent.start > t + lookaheadSec);
+    if (end === -1) end = s.sentences.length;
+    // Schedule whatever is already buffered around the new playhead. We do
+    // NOT advance renderCursor here — letting the rolling renderer pick up
+    // the gap on its next tick covers both seek-forward (new region to
+    // render) and seek-backward (already-buffered region replays).
+    scheduleWindow(s, start, end);
+    if (start < s.renderCursor) s.renderCursor = start;
+  }
+
+  function cancelPendingSources(s) {
+    for (const src of s.pendingSources) {
+      try { src.stop(); } catch {}
+      try { src.disconnect(); } catch {}
+    }
+    s.pendingSources = [];
+  }
+
+  function updateLiveDisplay(s) {
+    if (!videoEl || !elements.target) return;
+    const t = videoEl.currentTime;
+    const idx = s.sentences.findIndex((sent) => sent.start <= t && sent.end >= t);
+    if (idx === -1) return;
+    const translated = s.translations[idx];
+    const source = s.sentences[idx].text;
+    if (translated) {
+      currentTargetText = translated;
+      setTargetText(translated);
+    }
+    currentSourceText = source;
+    if (elements.source && settings.showSource) {
+      elements.source.textContent = source.slice(-220);
+    }
+  }
+
+  async function runRollingRenderer(s) {
+    while (s === session && !s.stopFlag) {
+      await new Promise((r) => setTimeout(r, 1000));
+      if (s !== session || s.stopFlag) continue;
+      if (!videoEl) continue;
+      const t = videoEl.currentTime;
+      const lookaheadSec = SUBFIRST_LOOKAHEAD_MS / 1000;
+      let targetIdx = s.sentences.findIndex((sent) => sent.start > t + lookaheadSec);
+      if (targetIdx === -1) targetIdx = s.sentences.length;
+      if (targetIdx <= s.renderCursor) {
+        // Nothing new to render this tick — refresh the on-screen line and idle.
+        updateLiveDisplay(s);
+        continue;
+      }
+      const start = s.renderCursor;
+      const end = targetIdx;
+      try {
+        const firstUntranslated = s.translations.findIndex((v, i) => i >= start && i < end && !v);
+        if (firstUntranslated !== -1) {
+          await translateBatch(s, firstUntranslated, end);
+        }
+        if (s !== session || s.stopFlag) return;
+        await renderWaveTTS(s, start, end);
+        if (s !== session || s.stopFlag) return;
+        scheduleWindow(s, start, end);
+        s.renderCursor = end;
+        updateLiveDisplay(s);
+      } catch {
+        // Background renderer never crashes the session. User still hears
+        // what was already rendered; next tick retries.
+      }
+    }
+  }
+
   // ───── Start session (token-bumped on each call) ──────────────────────────
   async function startSession(incomingSettings) {
     if (session) return { ok: false, error: "Session already running." };
@@ -1191,6 +1887,13 @@
     currentSourceText = "";
 
     if (settings.tier === "standard") {
+      // Subtitle-first path is YouTube-only in v0.3 and quietly falls back to
+      // the chunked Standard pipeline when no caption track is available, so
+      // existing users keep the Standard contract (lag tier, MiniMax voice)
+      // without needing to flip any setting.
+      if (location.hostname.includes("youtube.com")) {
+        return startSubtitleFirstSession();
+      }
       return startStandardSession();
     }
     if (settings.tier !== "realtime") {
@@ -1255,8 +1958,18 @@
       setOverlayState("live");
       emitState({ paused: false, status: "Translating" });
     };
+    // Realtime tier billing is per-minute via Kyma — stopping promptly on
+    // video end matters more here than for Standard. The end event maps to
+    // a clean session stop which fires the Kyma /end POST and releases the
+    // realtime session collateral.
+    const onYTEnded = () => {
+      stopSession("video-ended");
+      emitEnded("Video ended.");
+    };
     video.addEventListener("pause", onYTPause);
     video.addEventListener("play", onYTPlay);
+    video.addEventListener("ended", onYTEnded);
+    session._onEnded = onYTEnded;
 
     emitState({ running: true, paused: false, status: "Translating" });
     return { ok: true };
@@ -1270,6 +1983,16 @@
     if (videoEl) {
       if (onYTPause) videoEl.removeEventListener("pause", onYTPause);
       if (onYTPlay) videoEl.removeEventListener("play", onYTPlay);
+      // Subtitle-first session has its own seek listener attached on start.
+      if (session?.type === "subtitle-first" && session._onSeeked) {
+        try { videoEl.removeEventListener("seeked", session._onSeeked); } catch {}
+      }
+      // All session types attach an `ended` listener for auto-stop on
+      // natural video end. Remove it here to avoid the (now-detached)
+      // handler re-entering stopSession on the next end event.
+      if (session?._onEnded) {
+        try { videoEl.removeEventListener("ended", session._onEnded); } catch {}
+      }
       videoEl.muted = false;
       videoEl.volume = 1.0;
       videoEl = null;
@@ -1289,6 +2012,13 @@
           if (session.activeRecorder && session.activeRecorder.state !== "inactive") {
             try { session.activeRecorder.stop(); } catch {}
           }
+        }
+        if (session.type === "subtitle-first") {
+          session.stopFlag = true;
+          if (session.abortController) {
+            try { session.abortController.abort(); } catch {}
+          }
+          cancelPendingSources(session);
         }
         if (session.remoteAudio) {
           session.remoteAudio.pause();

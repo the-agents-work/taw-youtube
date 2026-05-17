@@ -19,6 +19,57 @@ const DEFAULT_SETTINGS = {
   kymaKey: "",
 };
 
+// YouTube CC URL cache. Populated by the webRequest listener below whenever
+// YouTube itself fires a /api/timedtext request (which it does when the user
+// or our content script toggles the captions button on the player). The URLs
+// are signed with the full YouTube session context — Echoly can re-fetch them
+// reliably where a manually-constructed plain URL returns 0-byte responses.
+// Keyed by YouTube videoId. Manual-sub URLs are preferred over ASR if both are
+// observed (we never overwrite a manual entry with an ASR one).
+const ytCaptionCache = new Map();
+const YT_CACHE_TTL_MS = 30 * 60 * 1000;  // signed URLs expire ~6h, refresh well before
+const YT_CACHE_GC_MS = 5 * 60 * 1000;
+
+if (typeof chrome.webRequest?.onCompleted?.addListener === "function") {
+  chrome.webRequest.onCompleted.addListener(
+    (details) => {
+      try {
+        if (details.statusCode !== 200) return;
+        const u = new URL(details.url);
+        const videoId = u.searchParams.get("v");
+        if (!videoId) return;
+        const isAsr = u.searchParams.get("kind") === "asr";
+        const existing = ytCaptionCache.get(videoId);
+        // Don't downgrade a manual-sub cache entry to an ASR one.
+        if (existing && !existing.isAsr && isAsr) return;
+        ytCaptionCache.set(videoId, {
+          url: details.url,
+          lang: u.searchParams.get("lang") || null,
+          kind: u.searchParams.get("kind") || null,
+          tlang: u.searchParams.get("tlang") || null,
+          isAsr,
+          capturedAt: Date.now(),
+        });
+      } catch {
+        // Bad URL or odd request shape — ignore, doesn't impact other captures.
+      }
+    },
+    {
+      urls: [
+        "*://*.youtube.com/api/timedtext*",
+        "*://*.youtube-nocookie.com/api/timedtext*",
+      ],
+    },
+  );
+
+  setInterval(() => {
+    const cutoff = Date.now() - YT_CACHE_TTL_MS;
+    for (const [id, v] of ytCaptionCache) {
+      if (v.capturedAt < cutoff) ytCaptionCache.delete(id);
+    }
+  }, YT_CACHE_GC_MS);
+}
+
 // In-memory state. Resets when the service worker cold-starts; that's
 // intentional — the user gets a clean idle on cold start.
 const state = {
@@ -198,15 +249,33 @@ async function handleUpdateVolume(originalVolume, voiceVolume) {
   chrome.storage.local
     .set({ originalVolume: state.originalVolume, voiceVolume: state.voiceVolume })
     .catch(() => {});
-  if (state.tabId) {
+
+  // state.tabId can be null if the popup is open before Start, or if the
+  // service worker cold-started since last Start (in-memory state lost).
+  // Fall back to the active YouTube tab so the slider always reaches some
+  // content script that can apply the change to videoEl directly.
+  let targetTabId = state.tabId;
+  if (!targetTabId) {
     try {
-      await relayToContent(state.tabId, {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab && isYouTubeUrl(tab.url)) targetTabId = tab.id;
+    } catch {
+      // No active YT tab — nothing to apply against. Silent.
+    }
+  }
+
+  if (targetTabId) {
+    try {
+      // Inject content script if the tab pre-existed our extension reload.
+      // Without this the message reaches a dead receiver and the slider feels broken.
+      await ensureContentScript(targetTabId);
+      await relayToContent(targetTabId, {
         type: "CONTENT_UPDATE_VOLUME",
         originalVolume: state.originalVolume,
         voiceVolume: state.voiceVolume,
       });
     } catch {
-      // Tab gone; volume will be re-applied next start.
+      // Tab gone or script injection refused; volume will be re-applied next start.
     }
   }
   return { ok: true };
@@ -233,6 +302,13 @@ function handleContentEvent(message) {
 
 // Popup → background → content router.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Cache-lookup from content script — needs a real response (not fire-and-forget).
+  // Handled before the generic content-event branch so we don't fall through.
+  if (sender.tab && message?.type === "GET_YT_CC_URL") {
+    const entry = message.videoId ? ytCaptionCache.get(message.videoId) : null;
+    sendResponse({ ok: !!entry, ...(entry || {}) });
+    return false;
+  }
   // Content-originated messages (have sender.tab).
   if (sender.tab) {
     handleContentEvent(message);
