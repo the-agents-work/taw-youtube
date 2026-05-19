@@ -153,6 +153,9 @@ Typeface choice gates the wordmark. See §8.
 | 2026-05-19 | Wordmark-only logo for v1; defer symbol to v2 | Claude proposed |
 | 2026-05-19 | Dark-first marketing surfaces; light-friendly extension | Claude proposed |
 | 2026-05-19 | Geist as candidate typeface (pending Son confirm) | Claude proposed |
+| 2026-05-19 | Tool stack: Claude Code (UI/UX/components/email/landing) + Recraft v3 ($12/mo for hero visual + logo vector cleanup). No Midjourney/Fiverr/agency for v1. | Son |
+| 2026-05-19 | Quality bar: Echoly v1 must visually equal Resend.com / Linear.app / Granola.ai / ElevenLabs.io anchors — iterate before launch if below. | Claude proposed |
+| 2026-05-19 | Anti-pattern reject list: no AI rainbow gradients, no AI human faces, no isometric illust, no sparkle accents, no inconsistent icon stroke. | Claude proposed |
 
 ---
 
