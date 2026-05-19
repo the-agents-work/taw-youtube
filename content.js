@@ -7,7 +7,7 @@
 
 (() => {
   // ───── F9 — Idempotent version guard ──────────────────────────────────────
-  const ECHOLY_VERSION = "0.5.6";
+  const ECHOLY_VERSION = "0.5.7";
   const GLOBAL_KEY = "__echolyContentVersion";
   if (window[GLOBAL_KEY] === ECHOLY_VERSION) return;
   // Older copy may have left UI behind; clean up before re-installing listeners.
@@ -93,6 +93,13 @@
   let desiredOriginalVol = -1;
   let lastOriginalWriteAt = 0;
   let onVolumeDrift = null;
+  // SF8 Phase 1 — Playback-rate awareness. Real fix (rate-aware scheduling
+  // + Realtime model research) is later phases. For now we just warn the
+  // user that translation may drift at non-1× speeds, so they have the
+  // right expectation. Toast is debounced so a series of rate changes
+  // (e.g. dragging YT's speed slider) doesn't spam.
+  let onRateChange = null;
+  let lastRateToastAt = 0;
 
   // ───── Background channel ─────────────────────────────────────────────────
   // Extension reload (dev mode update or Chrome auto-update) invalidates the
@@ -884,6 +891,36 @@
     desiredOriginalVol = -1;
   }
 
+  // SF8 Phase 1 — Listen to `ratechange` on the video element and toast a
+  // warning when playback is not 1×. Caller must invoke AFTER buildOverlay
+  // so showToast has a panel to render into.
+  function bindRateChangeWarn(video) {
+    if (!video) return;
+    unbindRateChangeWarn();
+    const warn = (rate) => {
+      if (Date.now() - lastRateToastAt < 4000) return;
+      lastRateToastAt = Date.now();
+      const r = Math.round(rate * 100) / 100;
+      showToast(
+        `Echoly works best at 1× speed (current: ${r}×). Translation may drift behind the speaker.`,
+        5000,
+      );
+    };
+    if (Math.abs(video.playbackRate - 1.0) > 0.01) warn(video.playbackRate);
+    onRateChange = () => {
+      if (!video) return;
+      if (Math.abs(video.playbackRate - 1.0) < 0.01) return;
+      warn(video.playbackRate);
+    };
+    video.addEventListener("ratechange", onRateChange);
+  }
+  function unbindRateChangeWarn() {
+    if (videoEl && onRateChange) {
+      try { videoEl.removeEventListener("ratechange", onRateChange); } catch {}
+    }
+    onRateChange = null;
+  }
+
   // ───── F4 — Voice / language handover (zero-gap) ──────────────────────────
   async function requestHandover(partial) {
     if (!session) return;
@@ -975,6 +1012,7 @@
     let stream;
     try {
       buildOverlay();
+      bindRateChangeWarn(video);
       setStatusText("Acquiring audio");
       stream = await captureWithRetry(video);
     } catch (err) {
@@ -1708,6 +1746,7 @@
     if (!videoId) return { ok: false, error: "Could not detect YouTube video id." };
 
     buildOverlay();
+    bindRateChangeWarn(video);
     setStatusText("Loading captions");
     setOverlayState("connecting");
 
@@ -2077,6 +2116,7 @@
     let stream;
     try {
       buildOverlay();
+      bindRateChangeWarn(video);
       setStatusText("Acquiring audio");
       stream = await captureWithRetry(video);
     } catch (err) {
@@ -2209,6 +2249,8 @@
       // SF3 — drop the volume drift guard before resetting volume, so our
       // own restore writes don't trigger it.
       unbindVolumeDriftGuard();
+      // SF8 — drop the playback-rate warn listener too.
+      unbindRateChangeWarn();
       videoEl.muted = false;
       videoEl.volume = 1.0;
       videoEl = null;
