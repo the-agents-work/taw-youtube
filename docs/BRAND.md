@@ -153,7 +153,9 @@ Typeface choice gates the wordmark. See §8.
 | 2026-05-19 | Wordmark-only logo for v1; defer symbol to v2 | Claude proposed |
 | 2026-05-19 | Dark-first marketing surfaces; light-friendly extension | Claude proposed |
 | 2026-05-19 | Geist as candidate typeface (pending Son confirm) | Claude proposed |
-| 2026-05-19 | Tool stack: Claude Code (UI/UX/components/email/landing) + Recraft v3 ($12/mo for hero visual + logo vector cleanup). No Midjourney/Fiverr/agency for v1. | Son |
+| 2026-05-19 | Tool stack: Claude Code (UI/UX/components/email/landing) + Recraft v4 vector via **kyma-api default endpoint** (kyma-api already integrates Recraft V4 — uses `model: "recraft-v4-vector"` for true SVG, `recraft-v4-pro` for raster). $0 extra subscription. No Midjourney/Fiverr/agency for v1. | Son |
+| 2026-05-19 | Visual direction **A "Aurora"** locked — violet/pink/amber gradient, Geist typography, dark-first marketing surfaces. | Son |
+| 2026-05-19 | Landing page (`echoly-web`) — Claude owns both visual design and code (Astro + Tailwind). Son reviews at 3 milestones: wordmark pick, landing first draft, pre-launch audit. | Son |
 | 2026-05-19 | Quality bar: Echoly v1 must visually equal Resend.com / Linear.app / Granola.ai / ElevenLabs.io anchors — iterate before launch if below. | Claude proposed |
 | 2026-05-19 | Anti-pattern reject list: no AI rainbow gradients, no AI human faces, no isometric illust, no sparkle accents, no inconsistent icon stroke. | Claude proposed |
 
