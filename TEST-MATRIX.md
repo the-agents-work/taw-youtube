@@ -317,4 +317,4 @@ Khi case ✅ LOCKED, ghi entry ở đây với commit hash + verification eviden
 
 | Round | Ticket | Status | Files changed | Commit | Verification needed |
 |-------|--------|--------|---------------|--------|---------------------|
-| 1 | SF6 (auto-play + pause RT non-live) | ⏳ awaiting verification | `content.js`, `manifest.json` | (uncommitted) | Test 3 scenarios: (1) CC video + RT, (2) CC video + Std, (3) live + RT. Each: click Start → confirm video pauses (or stays playing for live), confirm dub starts within ~3s of resume, confirm no "video stuck paused" |
+| 1 | SF6 (auto-play + pause RT non-live) | ⏳ awaiting hands-on verification | `content.js`, `manifest.json` | `8548329` | Test 3 scenarios: (1) CC video + RT, (2) CC video + Std, (3) live + RT. Each: click Start → confirm video pauses (or stays playing for live), confirm dub starts within ~3s of resume, confirm no "video stuck paused" |
