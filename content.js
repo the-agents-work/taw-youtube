@@ -7,7 +7,7 @@
 
 (() => {
   // ───── F9 — Idempotent version guard ──────────────────────────────────────
-  const ECHOLY_VERSION = "0.5.5";
+  const ECHOLY_VERSION = "0.5.6";
   const GLOBAL_KEY = "__echolyContentVersion";
   if (window[GLOBAL_KEY] === ECHOLY_VERSION) return;
   // Older copy may have left UI behind; clean up before re-installing listeners.
@@ -1220,7 +1220,13 @@
       "question",
       `Translate the spoken English in this audio into ${langName}. ` +
       `Output ONLY the translated sentence(s) for live dubbing — no quotes, ` +
-      `no labels, no commentary, no transcription of the original. Preserve ` +
+      `no labels, no commentary, no transcription of the original. ` +
+      // SF7 — concise output reduces TTS-vs-source duration drift in
+      // verbose target languages (VI/JA/KO). Prefer natural shorter
+      // phrasing over literal word-for-word; the goal is a dub that
+      // matches the speaker's pacing, not a textbook translation.
+      `Be CONCISE — match the original speech duration. Prefer shorter ` +
+      `natural phrasing; drop filler words. Preserve ` +
       `names, brand names, and technical terms verbatim. If the audio is ` +
       `silent or non-speech, output an empty string.`,
     );
@@ -1255,6 +1261,27 @@
     setOverlayState("live");
 
     // 3. TTS via Minimax. mp3 returned directly as audio bytes.
+    //
+    // SF7 — adaptive speed to prevent cumulative drift. TTS in verbose
+    // target languages (VI ~1.6x English, JA ~1.4x, KO ~1.5x) takes
+    // longer to read than the 5-second source chunk. Without speed
+    // adjustment, the playback queue grows ~3s per chunk → 30-60s
+    // drift per hour. We measure how far behind we already are
+    // (queueDepth) and dial the TTS speed up adaptively, capped at
+    // 1.30 to keep prosody natural. Above ~10s queue depth we skip
+    // the chunk entirely — better to lose a sentence than fall an
+    // entire minute behind.
+    const queueDepth = Math.max(0, s.nextPlayAt - s.audioCtx.currentTime);
+    if (queueDepth > 10) {
+      // Hard skip — accept content loss to claw back live-ness.
+      return;
+    }
+    let ttsSpeed = 1.0;
+    if (queueDepth > 6) ttsSpeed = 1.30;
+    else if (queueDepth > 4) ttsSpeed = 1.20;
+    else if (queueDepth > 2) ttsSpeed = 1.10;
+    else if (queueDepth > 1) ttsSpeed = 1.05;
+
     let ttsResp;
     try {
       ttsResp = await fetch(`${KYMA_BASE}/audio/speech`, {
@@ -1268,6 +1295,7 @@
           input: targetText,
           voice_id: voiceId,
           response_format: "mp3",
+          speed: ttsSpeed,
         }),
         signal: s.abortController.signal,
       });
@@ -1604,6 +1632,13 @@
       `Return ONLY a JSON object {"lines": [...]} with exactly ${items.length} ` +
       `strings in the same order. Preserve names, brand names, and technical ` +
       `terms verbatim. No commentary.\n\n` +
+      // SF7 — keep each line concise so the TTS-rendered duration stays
+      // close to the original subtitle cue's video-time duration. Verbose
+      // languages (VI/JA/KO) otherwise overshoot the cue window and start
+      // overlapping with the next sentence's playback slot.
+      `Each translated line should be CONCISE — prefer shorter natural ` +
+      `phrasing over literal word-for-word, so the dub fits the same time ` +
+      `slot as the original cue.\n\n` +
       `Input: ${JSON.stringify(items)}`;
     const res = await fetch(`${KYMA_BASE}/chat/completions`, {
       method: "POST",
