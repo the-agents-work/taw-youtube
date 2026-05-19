@@ -45,8 +45,8 @@ New user installs the extension, opens the popup, sees "paste Kyma key" → has 
 
 | Feature | Free | Pro | Max |
 |---|---|---|---|
-| **Price monthly** | $0 | $9 | $19 |
-| **Price annual** | $0 | $89 (saves 18%) | $159 (saves 30%) |
+| **Price monthly** | $0 | $9 | $24.90 |
+| **Price annual** | $0 | $89 (saves 18%) | $199 (saves 33%) |
 | **Standard mode** | 30 min/mo | Unlimited (FUP 25h/mo) | Unlimited (FUP 50h/mo) |
 | **Realtime mode** | BYOK only | BYOK only | 3h/mo included + BYOK |
 | **Target languages** | Vi + En only | All 13 | All 13 |
@@ -63,9 +63,9 @@ New user installs the extension, opens the popup, sees "paste Kyma key" → has 
 | Tier | Monthly × 12 | Annual price | Saves $ | Saves % |
 |---|---|---|---|---|
 | Pro | $108 | $89 | $19 | 17.6% |
-| Max | $228 | $159 | $69 | 30.3% |
+| Max | $298.80 | $199 | $99.80 | 33.4% |
 
-Asymmetric discount (Pro 18% vs Max 30%) creates affiliate alignment: Max annual = $39.75 commission @ 25% (or $47.70 @ 30%) — 18× larger than Pro monthly's $2.25. Partners self-select to pitch Max annual.
+Repriced 2026-05-19 (Max $19→$24.90 monthly, $159→$199 annual). Asymmetric discount (Pro 18% vs Max 33%) creates affiliate alignment: Max annual = $49.75 commission @ 25% (or $59.70 @ 30%) — 22× larger than Pro monthly's $2.25. Partners self-select to pitch Max annual. Max monthly mirrors Monica.im's Max ($24.90/mo) — comparable AI-companion category benchmark for premium-but-accessible positioning.
 
 ### 2.3 Free tier mechanics
 

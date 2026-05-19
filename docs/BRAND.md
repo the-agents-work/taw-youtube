@@ -156,6 +156,8 @@ Typeface choice gates the wordmark. See §8.
 | 2026-05-19 | Tool stack: Claude Code (UI/UX/components/email/landing) + Recraft v4 vector via **kyma-api default endpoint** (kyma-api already integrates Recraft V4 — uses `model: "recraft-v4-vector"` for true SVG, `recraft-v4-pro` for raster). $0 extra subscription. No Midjourney/Fiverr/agency for v1. | Son |
 | 2026-05-19 | Visual direction **A "Aurora"** locked — violet/pink/amber gradient, Geist typography, dark-first marketing surfaces. | Son |
 | 2026-05-19 | Landing page (`echoly-web`) — Claude owns both visual design and code (Astro + Tailwind). Son reviews at 3 milestones: wordmark pick, landing first draft, pre-launch audit. | Son |
+| 2026-05-19 | **Wordmark Variant C "Gradient E" locked**: first letter `e` in Aurora gradient, rest white. Paired with 24px app-icon square (Aurora gradient bg, white `e`) for nav/dashboard/favicon. Favicon SVG at `echoly-web/public/favicon.svg`. | Son |
+| 2026-05-19 | **Pivot from dark-first → Mixed sections (Stripe + ElevenLabs pattern)**. Hero, pricing, FAQ, footer = light surfaces. Features, product demo blocks, code/details, stats, bottom CTA = dark surfaces. Player mockup always dark regardless of section bg. Aurora orb adapts: vibrant on dark, soft pastel on light. CTA primary inverts: white-on-dark in dark sections, black-on-white in light sections. | Son |
 | 2026-05-19 | Quality bar: Echoly v1 must visually equal Resend.com / Linear.app / Granola.ai / ElevenLabs.io anchors — iterate before launch if below. | Claude proposed |
 | 2026-05-19 | Anti-pattern reject list: no AI rainbow gradients, no AI human faces, no isometric illust, no sparkle accents, no inconsistent icon stroke. | Claude proposed |
 
