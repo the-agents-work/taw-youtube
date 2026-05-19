@@ -7,7 +7,7 @@
 
 (() => {
   // ───── F9 — Idempotent version guard ──────────────────────────────────────
-  const ECHOLY_VERSION = "0.5.4";
+  const ECHOLY_VERSION = "0.5.5";
   const GLOBAL_KEY = "__echolyContentVersion";
   if (window[GLOBAL_KEY] === ECHOLY_VERSION) return;
   // Older copy may have left UI behind; clean up before re-installing listeners.
@@ -82,6 +82,17 @@
   let onYTPlay = null;
   let lastSpaUrl = location.href;
   let layout = loadLayout();
+  // SF3 — Original-volume drift guard: YouTube's player re-applies its
+  // own internally-cached volume on certain events (ad insertion, video
+  // element refresh, etc.), stomping our `video.volume = X` write. We
+  // hook `volumechange` and snap the volume back to our desired value
+  // when drift is detected. `desiredOriginalVol` < 0 means "not engaged"
+  // (no session active); >=0 is the value we're enforcing. The write
+  // timestamp avoids a feedback loop with our own writes triggering the
+  // same listener.
+  let desiredOriginalVol = -1;
+  let lastOriginalWriteAt = 0;
+  let onVolumeDrift = null;
 
   // ───── Background channel ─────────────────────────────────────────────────
   // Extension reload (dev mode update or Chrome auto-update) invalidates the
@@ -658,12 +669,32 @@
       handleRealtimeEvent(e.data, token);
     });
 
+    // Pre-create AudioContext + outputGain BEFORE registering ontrack, so
+    // the Voice volume slider has a valid target the moment the session
+    // is returned to startSession — even before the first remote audio
+    // track arrives (which can be 2-5s into a Realtime cold-start). The
+    // ontrack handler then just wires the remote stream into the existing
+    // graph. (SF3 fix.)
+    let preCtx = null;
+    let preGain = null;
+    try {
+      preCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (preCtx.state === "suspended") preCtx.resume().catch(() => {});
+      preGain = preCtx.createGain();
+      preGain.gain.value = computeGain(settings?.voiceVolume ?? 100);
+      preGain.connect(preCtx.destination);
+    } catch {
+      try { preCtx?.close(); } catch {}
+      preCtx = null;
+      preGain = null;
+    }
+
     const newSession = {
       token, pc, dc,
       stream: audioStream,
       remoteAudio: null,
-      audioCtx: null,
-      outputGain: null,
+      audioCtx: preCtx,
+      outputGain: preGain,
       kymaSessionId,
       kymaKey,
       targetLanguage: lang,
@@ -674,23 +705,40 @@
       if (newSession.remoteAudio) return;
       const audio = document.createElement("audio");
       audio.autoplay = true;
-      audio.muted = true;  // playback flows through Web Audio for amplification
+      // Default to muted; flipped to false if we have to fall back to
+      // HTMLAudio playback (no Web Audio path or it's stuck suspended).
+      audio.muted = true;
       audio.srcObject = event.streams[0];
       document.body.appendChild(audio);
       newSession.remoteAudio = audio;
 
-      try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        if (ctx.state === "suspended") ctx.resume().catch(() => {});
-        const src = ctx.createMediaStreamSource(event.streams[0]);
-        const gain = ctx.createGain();
-        gain.gain.value = computeGain(settings?.voiceVolume ?? 100);
-        src.connect(gain);
-        gain.connect(ctx.destination);
-        newSession.audioCtx = ctx;
-        newSession.outputGain = gain;
-      } catch {
-        // Fallback: HTMLAudio (capped at 1.0)
+      const ctxRunning =
+        newSession.audioCtx &&
+        newSession.audioCtx.state !== "closed";
+      if (newSession.outputGain && ctxRunning) {
+        try {
+          const src = newSession.audioCtx.createMediaStreamSource(event.streams[0]);
+          src.connect(newSession.outputGain);
+          // Best-effort second resume in case ctx is still suspended at
+          // track time (some Chrome versions block initial resume until
+          // first node connect).
+          if (newSession.audioCtx.state === "suspended") {
+            newSession.audioCtx.resume().catch(() => {});
+          }
+        } catch {
+          // Web Audio wiring failed mid-flight. Tear down Web Audio path
+          // and play through the HTMLAudio element instead (capped at 1.0).
+          try { newSession.audioCtx.close(); } catch {}
+          newSession.audioCtx = null;
+          newSession.outputGain = null;
+          audio.muted = false;
+          audio.volume = Math.min((settings?.voiceVolume ?? 100) / 100, 1.0);
+        }
+      } else {
+        // No usable Web Audio context — HTMLAudio fallback.
+        if (newSession.audioCtx) { try { newSession.audioCtx.close(); } catch {} }
+        newSession.audioCtx = null;
+        newSession.outputGain = null;
         audio.muted = false;
         audio.volume = Math.min((settings?.voiceVolume ?? 100) / 100, 1.0);
       }
@@ -780,6 +828,8 @@
     const video = videoEl || (typeof findVideo === "function" ? findVideo() : null);
     if (video) {
       const vol = Math.max(0, Math.min(1, (originalVolume ?? 18) / 100));
+      desiredOriginalVol = vol;
+      lastOriginalWriteAt = Date.now();
       video.volume = vol;
       video.muted = vol === 0;
     }
@@ -805,6 +855,33 @@
       session.remoteAudio.volume = Math.min((voiceVolume ?? 100) / 100, 1.0);
       session.remoteAudio.muted = voiceVolume === 0;
     }
+  }
+
+  // SF3 — Hook video element's volumechange and snap back to our desired
+  // value when YouTube's player re-applies its own (ad insertion, video
+  // refresh, etc.). Bound when a session starts, unbound on stop. We
+  // ignore events fired within ~200ms of our own write to avoid a
+  // self-triggered feedback loop.
+  function bindVolumeDriftGuard(video) {
+    if (!video) return;
+    unbindVolumeDriftGuard();
+    onVolumeDrift = () => {
+      if (desiredOriginalVol < 0 || !video) return;
+      if (Date.now() - lastOriginalWriteAt < 200) return;
+      if (Math.abs(video.volume - desiredOriginalVol) > 0.01) {
+        lastOriginalWriteAt = Date.now();
+        video.volume = desiredOriginalVol;
+        video.muted = desiredOriginalVol === 0;
+      }
+    };
+    video.addEventListener("volumechange", onVolumeDrift);
+  }
+  function unbindVolumeDriftGuard() {
+    if (videoEl && onVolumeDrift) {
+      try { videoEl.removeEventListener("volumechange", onVolumeDrift); } catch {}
+    }
+    onVolumeDrift = null;
+    desiredOriginalVol = -1;
   }
 
   // ───── F4 — Voice / language handover (zero-gap) ──────────────────────────
@@ -893,6 +970,7 @@
     const video = findVideo();
     if (!video) return { ok: false, error: "No YouTube video on this page." };
     videoEl = video;
+    bindVolumeDriftGuard(video);
 
     let stream;
     try {
@@ -1589,6 +1667,7 @@
     const video = findVideo();
     if (!video) return { ok: false, error: "No video on this page." };
     videoEl = video;
+    bindVolumeDriftGuard(video);
 
     const videoId = getYouTubeVideoId();
     if (!videoId) return { ok: false, error: "Could not detect YouTube video id." };
@@ -1956,6 +2035,7 @@
     const video = findVideo();
     if (!video) return { ok: false, error: "No YouTube video on this page." };
     videoEl = video;
+    bindVolumeDriftGuard(video);
     const live = isLive(video);
     const wasPlaying = !video.paused;
 
@@ -2091,6 +2171,9 @@
       if (session?._onEnded) {
         try { videoEl.removeEventListener("ended", session._onEnded); } catch {}
       }
+      // SF3 — drop the volume drift guard before resetting volume, so our
+      // own restore writes don't trigger it.
+      unbindVolumeDriftGuard();
       videoEl.muted = false;
       videoEl.volume = 1.0;
       videoEl = null;
