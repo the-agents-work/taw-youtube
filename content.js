@@ -7,7 +7,7 @@
 
 (() => {
   // ───── F9 — Idempotent version guard ──────────────────────────────────────
-  const ECHOLY_VERSION = "0.5.3";
+  const ECHOLY_VERSION = "0.5.4";
   const GLOBAL_KEY = "__echolyContentVersion";
   if (window[GLOBAL_KEY] === ECHOLY_VERSION) return;
   // Older copy may have left UI behind; clean up before re-installing listeners.
@@ -1689,23 +1689,32 @@
     newSession.translations = new Array(sentences.length);
     setStatusText(`Translating ${sentences.length} lines`);
 
-    // First wave = whatever plays in the next SUBFIRST_LOOKAHEAD_MS from
-    // current playhead. For brand-new sessions playhead is usually 0 so this
-    // captures the first ~30s of dialogue.
+    // First wave covers 2 sentences starting from the current playhead.
+    // Crucial that wave 1 starts at the playhead, not index 0 — otherwise
+    // when the user clicks Start mid-video, wave 1 renders sentences that
+    // are already in the past, scheduleWindow's `at < now - 0.5` filter
+    // skips them all, and the user hears nothing until runRollingRenderer
+    // catches up ~10-15s later. (Reported by Son 2026-05-19 testing v0.5.3
+    // on Google I/O '26 keynote.)
+    //
+    // Wave 1 cap of 2 (was 5 pre-SF6): keeps the cumulative await chain
+    // under Chrome's ~5s transient-user-activation window so `video.play()`
+    // below doesn't get blocked.
+    const currentTime = video.currentTime;
     const lookaheadSec = SUBFIRST_LOOKAHEAD_MS / 1000;
-    let firstWaveEnd = sentences.findIndex((s) => s.start > video.currentTime + lookaheadSec);
-    if (firstWaveEnd === -1) firstWaveEnd = sentences.length;
-    // Wave 1 target: 2 sentences. Shrunk from 5 so the cumulative await
-    // chain (caption fetch + 1 Gemini call + 2 parallel MiniMax TTS) stays
-    // under Chrome's ~5s transient-user-activation window. Without this,
-    // `await video.play()` below silently fails and the video stays
-    // paused after wave 1 (SF6). Background `runRollingRenderer` will
-    // render sentences 3+ shortly after playback resumes.
-    firstWaveEnd = Math.min(firstWaveEnd, 2);
-    if (firstWaveEnd === 0 && sentences.length > 0) firstWaveEnd = 1;
+    let firstWaveStart = sentences.findIndex((s) => s.start >= currentTime);
+    if (firstWaveStart === -1) firstWaveStart = sentences.length;
+    let lookaheadEnd = sentences.findIndex((s) => s.start > currentTime + lookaheadSec);
+    if (lookaheadEnd === -1) lookaheadEnd = sentences.length;
+    let firstWaveEnd = Math.min(lookaheadEnd, firstWaveStart + 2);
+    // Ensure we render at least 1 forward sentence if any exist (e.g. when
+    // lookaheadEnd lands exactly at firstWaveStart due to gap in cues).
+    if (firstWaveEnd <= firstWaveStart && firstWaveStart < sentences.length) {
+      firstWaveEnd = firstWaveStart + 1;
+    }
 
     try {
-      await translateBatch(newSession, 0, firstWaveEnd);
+      await translateBatch(newSession, firstWaveStart, firstWaveEnd);
     } catch (err) {
       if (token !== pageToken || newSession.stopFlag) {
         try { audioCtx.close(); } catch {}
@@ -1726,7 +1735,7 @@
     }
 
     setStatusText("Preparing voices");
-    await renderWaveTTS(newSession, 0, firstWaveEnd);
+    await renderWaveTTS(newSession, firstWaveStart, firstWaveEnd);
     if (token !== pageToken || newSession.stopFlag) {
       try { audioCtx.close(); } catch {}
       restorePlay();
@@ -1734,7 +1743,7 @@
     }
 
     newSession.audioOffset = audioCtx.currentTime - video.currentTime;
-    scheduleWindow(newSession, 0, firstWaveEnd);
+    scheduleWindow(newSession, firstWaveStart, firstWaveEnd);
     newSession.renderCursor = firstWaveEnd;
 
     setStatusText("Translating");
