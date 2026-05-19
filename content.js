@@ -7,7 +7,7 @@
 
 (() => {
   // ───── F9 — Idempotent version guard ──────────────────────────────────────
-  const ECHOLY_VERSION = "0.5.2";
+  const ECHOLY_VERSION = "0.5.3";
   const GLOBAL_KEY = "__echolyContentVersion";
   if (window[GLOBAL_KEY] === ECHOLY_VERSION) return;
   // Older copy may have left UI behind; clean up before re-installing listeners.
@@ -486,6 +486,13 @@
   function findVideo() {
     return document.querySelector("video.html5-main-video") || document.querySelector("video");
   }
+  // Live streams report duration === Infinity (or NaN before metadata).
+  // Non-live VOD has a finite duration. Used to skip the pause-then-play
+  // sync orchestration on live, where pausing would push the user out of
+  // the live edge into DVR mode permanently.
+  function isLive(video) {
+    return !video || !isFinite(video.duration);
+  }
   function nudgePlay(video) {
     if (!video.paused) return Promise.resolve();
     const p = video.play();
@@ -577,6 +584,30 @@
         keepalive: true,
       });
     } catch {}
+  }
+
+  // Waits for the PeerConnection to reach "connected" state, or resolves
+  // false on timeout / failure. Used to gate `video.play()` on the
+  // non-live Realtime sync flow so audio capture starts only once the
+  // WebRTC channel can actually accept it (SF6).
+  function waitForPCConnected(pc, timeoutMs = 3000) {
+    if (pc.connectionState === "connected") return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        pc.removeEventListener("connectionstatechange", handler);
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      const handler = () => {
+        if (pc.connectionState === "connected") finish(true);
+        else if (pc.connectionState === "failed" || pc.connectionState === "closed") finish(false);
+      };
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      pc.addEventListener("connectionstatechange", handler);
+    });
   }
 
   // ───── Session core (build PeerConnection through Kyma → OpenAI) ─────────
@@ -1664,7 +1695,14 @@
     const lookaheadSec = SUBFIRST_LOOKAHEAD_MS / 1000;
     let firstWaveEnd = sentences.findIndex((s) => s.start > video.currentTime + lookaheadSec);
     if (firstWaveEnd === -1) firstWaveEnd = sentences.length;
-    firstWaveEnd = Math.max(firstWaveEnd, Math.min(sentences.length, 5));
+    // Wave 1 target: 2 sentences. Shrunk from 5 so the cumulative await
+    // chain (caption fetch + 1 Gemini call + 2 parallel MiniMax TTS) stays
+    // under Chrome's ~5s transient-user-activation window. Without this,
+    // `await video.play()` below silently fails and the video stays
+    // paused after wave 1 (SF6). Background `runRollingRenderer` will
+    // render sentences 3+ shortly after playback resumes.
+    firstWaveEnd = Math.min(firstWaveEnd, 2);
+    if (firstWaveEnd === 0 && sentences.length > 0) firstWaveEnd = 1;
 
     try {
       await translateBatch(newSession, 0, firstWaveEnd);
@@ -1891,7 +1929,13 @@
       // the chunked Standard pipeline when no caption track is available, so
       // existing users keep the Standard contract (lag tier, MiniMax voice)
       // without needing to flip any setting.
-      if (location.hostname.includes("youtube.com")) {
+      //
+      // Skip subtitle-first for live streams: it pauses the video to render
+      // wave 1, which pushes a live viewer out of the live edge into DVR
+      // mode permanently. Live + Standard goes straight to chunked, which
+      // tolerates continuous playback. (SF6 / TC-6 design decision.)
+      const probeVideo = findVideo();
+      if (location.hostname.includes("youtube.com") && !isLive(probeVideo)) {
         return startSubtitleFirstSession();
       }
       return startStandardSession();
@@ -1903,6 +1947,8 @@
     const video = findVideo();
     if (!video) return { ok: false, error: "No YouTube video on this page." };
     videoEl = video;
+    const live = isLive(video);
+    const wasPlaying = !video.paused;
 
     let stream;
     try {
@@ -1912,6 +1958,16 @@
     } catch (err) {
       removeOverlay();
       return { ok: false, error: err.message };
+    }
+
+    // Non-live sync (SF6): pause the video after we have capture tracks so
+    // the speaker doesn't run ahead while we set up the WebRTC channel.
+    // captureStream tracks survive pause (they emit silence), and resume
+    // audio flow when video plays again. Live skips this — pausing a live
+    // stream pushes the user out of the live edge permanently.
+    if (!live) {
+      try { video.pause(); } catch {}
+      setStatusText("Connecting");
     }
 
     const token = ++pageToken;
@@ -1924,6 +1980,11 @@
       });
     } catch (err) {
       stream.getTracks().forEach((t) => t.stop());
+      // Restore play state so the user isn't left staring at a frozen
+      // frame after a build failure.
+      if (!live && wasPlaying) {
+        try { video.play().catch(() => {}); } catch {}
+      }
       removeOverlay();
       const msg = err.cta
         ? `${err.message} (${err.cta})`
@@ -1933,13 +1994,20 @@
     if (token !== pageToken) {
       // Stop arrived during build
       try { newSession.pc.close(); } catch {}
+      if (!live && wasPlaying) {
+        try { video.play().catch(() => {}); } catch {}
+      }
       removeOverlay();
       return { ok: false, error: "Cancelled before connect completed." };
     }
 
     session = newSession;
-    setStatusText("Translating");
     setOverlayState("live");
+    if (live) {
+      setStatusText("Translating");
+    } else {
+      setStatusText("Almost ready");
+    }
     startHeartbeat(session.kymaSessionId, session.kymaKey);
     startSessionTimer();
     applyVolumes(settings.originalVolume, settings.voiceVolume);
@@ -1970,6 +2038,27 @@
     video.addEventListener("play", onYTPlay);
     video.addEventListener("ended", onYTEnded);
     session._onEnded = onYTEnded;
+
+    // Non-live: PC is built; now wait briefly for ICE to actually connect
+    // before resuming playback so the first audio captured already has a
+    // live channel to flow into. Timeout falls through to play() anyway —
+    // if PC truly failed, the iceconnectionstatechange listener inside
+    // buildRealtimeSession will stop the session cleanly.
+    if (!live) {
+      await waitForPCConnected(newSession.pc, 3000);
+      if (token !== pageToken) {
+        return { ok: false, error: "Cancelled before play." };
+      }
+      try {
+        await video.play();
+        setStatusText("Translating");
+      } catch {
+        // play() blocked by autoplay policy despite our best-effort gesture
+        // chain. Surface a prompt so the user knows what to do.
+        setStatusText("Press YouTube play to start dub");
+        showToast("Press YouTube play to start dub", 6000);
+      }
+    }
 
     emitState({ running: true, paused: false, status: "Translating" });
     return { ok: true };
