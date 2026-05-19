@@ -995,59 +995,46 @@ Public marketing page for the partner program:
      { partner_code, user_id, amount_usd, type: "first_payment" }
 ```
 
-### 12.3 Commission calculation
+### 12.3 Commission calculation — Affitor owns
 
-```typescript
-function calculateCommission(
-  partner: Partner,
-  paymentType: 'first_payment' | 'renewal',
-  grossAmountUsd: number,
-): number {
-  const pct = paymentType === 'first_payment'
-    ? partner.first_payment_pct
-    : partner.recurring_pct;
-  return Math.round(grossAmountUsd * (pct / 100) * 100) / 100;  // 2 decimal
-}
-```
+**Locked 2026-05-19**: commission rate config and amount calculation live on Affitor, not Echoly. Echoly is a thin payment-event forwarder.
 
-Example:
-- Partner NGTUNG42 (default tier) refers user to Max Annual $159
-- First payment commission: $159 × 0.25 = $39.75
-- After 1 year, user renews $159 (Stripe creates new invoice)
-- Renewal commission: $159 × 0.10 = $15.90
-- All subsequent renewals: $15.90 each year
+- Partner config (default vs top tier, first_payment_pct, recurring_pct, payout rules) → Affitor DB.
+- Commission amount math → Affitor's `/commissions` endpoint computes from `gross_amount_usd` + Affitor-side partner rate lookup.
+- Top-performer promotion → Affitor automates internally (no Echoly involvement).
+- Echoly does NOT maintain a local `partners` table, does NOT mirror commission rates, does NOT calculate commission_amount. Source of truth is Affitor.
 
-### 12.4 Top performer promotion
+Rationale: prevent rate-drift between two systems when Affitor flips a partner's tier (e.g. monthly auto-promote). Affitor is the affiliate system of record — Echoly is just one of its merchant clients (treated identically to future 3rd-party Affitor merchants).
 
-Quarterly review by Son:
-- Query commission_events for last 90 days
-- Sum gross_amount_usd by partner
-- Partners with > $5K cumulative OR > 50 active subs → promote to 'top'
-- UPDATE partners SET commission_tier = 'top', first_payment_pct = 30, recurring_pct = 12 WHERE code = ?
-- Email partner: "Congrats, you've earned top tier commissions starting next billing cycle"
+### 12.4 Top performer promotion — Affitor automates
 
-### 12.5 Affitor API contract (proposed)
+Quarterly threshold ($5K cumulative or 50 active subs) is enforced on Affitor's side using its own DB + cron. Echoly receives no signal here; the next commission POST will be credited at whatever rate Affitor applies. Partners see promotion confirmation in their Affitor dashboard / email, not on Echoly.
 
-Echoly is a consumer of Affitor's API. Endpoints Echoly needs:
+### 12.5 Affitor API contract (Echoly → Affitor)
+
+Echoly is one of Affitor's merchant clients. The only outbound contract Echoly depends on:
 
 ```
-POST /v1/merchants/echoly/partners
-  Body: { display_name, email, commission_tier, code }
-  Returns: { affitor_partner_id, status }
-
 POST /v1/merchants/echoly/commissions
-  Body: { partner_code, user_id, gross_amount_usd, commission_amount_usd,
-          type, source_event_id }
-  Returns: { commission_id, status }
-
-GET /v1/merchants/echoly/partners/:code
-  Returns: { code, display_name, lifetime_earned, lifetime_paid, pending_amount }
-
-GET /v1/merchants/echoly/partners/:code/clicks?since=...
-  Returns: array of click events for analytics
+  Body: {
+    partner_code,        // Stripe metadata.affiliate_ref pass-through
+    user_id,             // Echoly's ULID — opaque to Affitor, used for dedupe
+    subscription_id,     // Echoly's internal subscription ULID
+    type,                // 'first_payment' | 'renewal'
+    gross_amount_usd,    // Stripe amount_total / amount_paid / 100
+    source_event_id      // Stripe event.id — Affitor's idempotency key
+  }
+  Returns: { commission_id, status }   // Affitor decides commission amount; Echoly stores only commission_id
 ```
 
-If Affitor API isn't ready in v1 sprint, Echoly tracks commissions in own commission_events table and exports CSV for Son to manually settle with partners.
+Echoly's local `commission_events` table is a forward-audit log (which Stripe events did we POST, did Affitor 2xx ack), not a commission ledger. Schema fields:
+
+```
+id, user_id, subscription_id, partner_code, type, gross_amount_usd,
+source_event_id, posted_to_affitor_at, affitor_event_id, created_at
+```
+
+No `commission_amount_usd`, no `first_payment_pct/recurring_pct`. If Affitor API isn't ready, rows stay with `posted_to_affitor_at = NULL` and a Day-5 cron retries pending. CSV export is the manual fallback.
 
 ---
 
