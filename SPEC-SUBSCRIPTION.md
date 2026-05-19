@@ -1306,16 +1306,16 @@ Bullet list:
 - [x] 15/15 endpoint tests pass end-to-end
 - [ ] Extension manifest update + content.js KYMA_BASE swap — deferred to Day 4-5 (extension ships first, server hookup once Stripe live)
 
-### Day 3 — Billing + Affiliate (8h)
+### Day 3 — Billing + Affiliate (✅ CODE COMPLETE 2026-05-19)
 
-- [ ] Stripe Checkout endpoint `POST /v1/billing/checkout`
-- [ ] Stripe Customer Portal endpoint `POST /v1/billing/portal`
-- [ ] Webhook handlers for all 6 events (idempotent via webhook_events table)
-- [ ] Affiliate cookie capture: server endpoint `GET /api/ref-cookie`
-- [ ] Extension: fetch ref cookie on install, store in chrome.storage
-- [ ] Stripe metadata flow: extension → checkout → webhook → commission_event
-- [ ] Affitor API integration: POST commission events (mock if API not ready)
-- [ ] Test: full signup → upgrade → cancel flow + affiliate attribution
+- [x] Stripe Checkout endpoint `POST /v1/billing/checkout` — auth-gated, customer cache, metadata + tax + promo codes
+- [x] Stripe Customer Portal endpoint `POST /v1/billing/portal` — 400 if no customer on file
+- [x] Webhook handlers for all 6 events (`checkout.session.completed`, `customer.subscription.{created,updated,deleted}`, `invoice.payment_{succeeded,failed}`) — idempotent via `webhook_events` PK, Web-Crypto signature verify (`constructEventAsync`)
+- [x] Affiliate cookie capture: `GET /v1/affiliate/ref-cookie` (Day 2 shipped)
+- [ ] Extension: fetch ref cookie on install, store in chrome.storage — **deferred to Day 4** alongside extension subscription-mode wiring (depends on echolyhq.com landing setting the cookie cross-domain)
+- [x] Stripe metadata flow: extension → checkout → webhook → commission_event — backend complete; extension producer Day 4
+- [x] Affitor API integration: `postCommission()` with graceful fallback (rows stay `posted_to_affitor_at = NULL` when key/endpoint not configured — Day-5 cron retries pending)
+- [ ] Test: full signup → upgrade → cancel flow — **blocked on Son's manual Stripe dashboard prereqs** (4 price IDs + webhook secret). Smoke tests pass (`/health` + all 4 routes return correct error codes without secrets). See `echoly-server/README.md` "Day 3 — Stripe manual prereqs" + "Stripe CLI smoke test" sections.
 
 ### Day 4 — Dashboard + Emails (8h)
 
