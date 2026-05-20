@@ -282,6 +282,7 @@ select:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Usage meter */
 .usage-block { display: flex; flex-direction: column; gap: 6px; }
+.usage-block[hidden] { display: none; }
 .usage-row { display: flex; align-items: baseline; justify-content: space-between; font-size: 11px; }
 .usage-label { color: var(--label-secondary); }
 .usage-numbers { font-variant-numeric: tabular-nums; color: var(--label); font-weight: 600; }

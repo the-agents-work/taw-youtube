@@ -192,7 +192,7 @@ function renderUsageMeters(tier, usage) {
 
   // Standard meter — always shown for signed-in users.
   usageStdBlock.hidden = false;
-  if (usageStdLabel) usageStdLabel.textContent = tier === "free" ? "Free tier" : "Standard";
+  if (usageStdLabel) usageStdLabel.textContent = "Standard";
   if (usageStdUsed) usageStdUsed.textContent = fmtMin(u.standard);
   if (usageStdCap) usageStdCap.textContent = fmtMin(c.std);
   if (usageStdFill) {
@@ -271,11 +271,42 @@ function applyState(s) {
     toggleBtn.classList.remove("is-live");
   } else {
     setStateClass("idle");
-    statusEl.textContent = state.kymaKey ? "Ready." : "Add a Kyma key to start.";
+    // v0.6.2: Ready when EITHER BYOK key OR signed-in echolyhq session.
+    if ((state.kymaKey || "").trim() || state.signedInUser) {
+      statusEl.textContent = "Ready.";
+    } else {
+      statusEl.textContent = "Sign in or paste a Kyma key to start.";
+    }
     toggleBtn.textContent = "Start";
     toggleBtn.classList.remove("is-live");
   }
   toggleBtn.disabled = false;
+  // Gate Realtime option in the tier dropdown by user.tier === "max" || BYOK.
+  // Non-Max signed-in users see Realtime grayed with a "(Max only)" hint.
+  applyTierGating();
+}
+
+function applyTierGating() {
+  if (!tierSelect) return;
+  const userTier = state.signedInUser?.tier;
+  const hasByok = !!(state.kymaKey || "").trim();
+  const allowRealtime = hasByok || userTier === "max";
+  for (const opt of tierSelect.options) {
+    if (opt.value === "realtime") {
+      opt.disabled = !allowRealtime;
+      if (!allowRealtime && !opt.textContent.includes("(Max only)")) {
+        opt.textContent = opt.textContent.replace(/ \(Max only\)$/, "") + " (Max only)";
+      } else if (allowRealtime) {
+        opt.textContent = opt.textContent.replace(/ \(Max only\)$/, "");
+      }
+    }
+  }
+  // If the user is currently on Realtime but no longer allowed, flip them
+  // to Standard so the next Start doesn't error.
+  if (!allowRealtime && tierSelect.value === "realtime") {
+    tierSelect.value = "standard";
+    repopulateVoices("standard", state.standardVoice);
+  }
 }
 
 function readSettings() {
@@ -329,8 +360,21 @@ async function onToggle() {
       else applyState({ running: false, connecting: false, paused: false });
     } else {
       const settings = readSettings();
-      if (!settings.kymaKey) {
-        statusEl.textContent = "Add a Kyma key first.";
+      // v0.6.2: BYOK Kyma key OR signed-in echolyhq.com session is enough.
+      // Background.resolveApiMode picks the right one (BYOK wins).
+      if (!settings.kymaKey && !state.signedInUser) {
+        statusEl.textContent = "Sign in or paste a Kyma key.";
+        setStateClass("error");
+        toggleBtn.disabled = false;
+        return;
+      }
+      // Realtime is Max-tier only via the server proxy. BYOK users can run
+      // realtime regardless (their Kyma key, their balance).
+      const userTier = state.signedInUser?.tier;
+      const isRealtime = settings.tier === "realtime";
+      const hasByok = !!(settings.kymaKey || "").trim();
+      if (isRealtime && !hasByok && userTier !== "max") {
+        statusEl.textContent = "Realtime is a Max-tier feature. Upgrade or paste a Kyma key.";
         setStateClass("error");
         toggleBtn.disabled = false;
         return;
