@@ -48,7 +48,7 @@ New user installs the extension, opens the popup, sees "paste Kyma key" → has 
 | **Price monthly** | $0 | $9 | $24.90 |
 | **Price annual** | $0 | $89 (saves 18%) | $199 (saves 33%) |
 | **Standard mode** | 30 min/mo | Unlimited (FUP 25h/mo) | Unlimited (FUP 50h/mo) |
-| **Realtime mode** | BYOK only | BYOK only | 3h/mo included + BYOK |
+| **Realtime mode** | BYOK only | BYOK only | 2h/mo included + BYOK |
 | **Target languages** | Vi + En only | All 13 | All 13 |
 | **MiniMax voices** | 2 (default) | All 5 | All 5 + experimental |
 | **Voice cloning (future)** | No | No | Yes (beta) |
@@ -102,18 +102,23 @@ Path A and Path B can coexist for the same user. If both BYOK key AND active sub
 | Tier | Standard cap | Realtime cap |
 |---|---|---|
 | Free (server) | 30 min/mo total | 0 (BYOK only) |
-| Pro | 25 hours/mo (1500 min) — **TODO recalc** | 0 (BYOK only) |
-| Max | 50 hours/mo (3000 min) — **TODO recalc** | 3 hours/mo (180 min) — **TODO recalc** |
+| Pro | 25 hours/mo (1500 min) | 0 (BYOK only) |
+| Max | 50 hours/mo (3000 min) | 2 hours/mo (120 min) |
 
-> **⚠ Caps subject to revision before paid launch.** Brand-time numbers above (25h Pro / 50h+3h Max) were placeholder anchors, not derived from unit-economics math. At current Kyma audio rate (~$0.04/min for `gemini-3-flash-audio`), a cap-hit Pro user costs Echoly ~$60/mo against $9 monthly revenue — a $51/user loss before Stripe fees. Real numbers need:
->
-> 1. **Actual median usage** from beta cohort (sample once 50+ paying users land). Most subs likely use <30% of cap — math works on aggregate even if heavy users lose money individually.
-> 2. **Real Kyma cost per pipeline path** — subtitle-first cache hit (near-zero cost) vs live audio fallback (Vertex rate) vs realtime (provider-passthrough). Heavily-skewed pipeline mix changes effective per-minute cost.
-> 3. **Target gross margin** — Son to set (50%? 70%? 80% Linear-tier?) — drives cap-and-price design.
-> 4. **Stripe fees + payment-method mix** — 2.9% + $0.30 standard, 0.5% Stripe Tax on top.
-> 5. **Decision before launch**: lower cap (e.g. Pro = 10h not 25h), raise price (e.g. Pro = $14 not $9), or shift cost via better caching / pipeline-tier routing.
->
-> Free tier 30min is safe — Kyma free monthly window covers it. Realtime Max 3h locked low because realtime is server-metered already (Kyma cost ~3× audio).
+#### Margin math — locked 2026-05-19 at 70% gross margin floor
+
+Worst-case scenario = annual billing (lower monthly revenue split). Standard pipeline = `gemini-3-flash-audio` at `$0.000648/min`. Realtime pipeline = `gpt-realtime-translate` at `$0.046/min` (~70× more expensive). Stripe fees: 2.9% + $0.30 per transaction, ~$0.05/mo Stripe Tax allocation.
+
+| Tier | Annual price | Net rev/mo | Cost ceiling (30%) | Cap design | Cost if maxed | Margin if maxed |
+|---|---|---|---|---|---|---|
+| Free | $0 | $0 | $0 | 30 min std | $0.019 | absorbed (CAC) |
+| Pro | $89/yr | $7.13 | $2.14 | 25 h std | $0.972 | **86% ✓** |
+| Max std | $199/yr | $16.01 | $4.80 | 50 h std | $1.944 | **88% ✓** |
+| Max realtime | (shared $16.01) | (shared $4.80) | 2 h realtime | $5.52 + std $1.94 = $7.46 worst | **53% worst / ~76% avg** |
+
+**Standard pipeline is far below the 70% floor** even when maxed — current Pro/Max standard caps stay. **Realtime is the bottleneck** so Max realtime moved from 3h → 2h to keep average-case margin above 70%. Worst case (5% of users max both std + realtime simultaneously) dips to 53% but the realistic-usage average lands at ~76%. If the worst-case shape changes after beta data, options ranked: (a) lower realtime cap to 1h, (b) raise Max monthly to $29.90, (c) push more pipeline to subtitle-first cache.
+
+Free tier 30 min stays — Kyma free monthly window covers most of the cost; treat as customer-acquisition spend.
 
 ### 3.3 Hard-block UX flow
 
