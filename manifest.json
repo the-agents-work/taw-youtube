@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Echoly — Live YouTube Translation",
   "short_name": "Echoly",
-  "description": "Hear any YouTube video in your language. Live AI dubbing, picks voice + language, runs on your Kyma key.",
-  "version": "0.5.7",
+  "description": "Hear any YouTube video in your language. Live AI dubbing, 40+ language pairs. Free 30 min/month or bring your own Kyma key.",
+  "version": "0.6.0",
   "minimum_chrome_version": "116",
   "permissions": ["activeTab", "scripting", "storage", "webRequest"],
   "content_security_policy": {
@@ -13,7 +13,9 @@
     "https://*.youtube.com/*",
     "https://youtube.com/*",
     "https://api.kymaapi.com/*",
-    "https://api.openai.com/*"
+    "https://api.openai.com/*",
+    "https://api.echolyhq.com/*",
+    "https://echolyhq.com/*"
   ],
   "icons": {
     "16": "icons/icon-16.png",
