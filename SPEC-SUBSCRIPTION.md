@@ -102,18 +102,28 @@ Path A and Path B can coexist for the same user. If both BYOK key AND active sub
 | Tier | Standard cap | Realtime cap |
 |---|---|---|
 | Free (server) | 30 min/mo total | 0 (BYOK only) |
-| Pro | 25 hours/mo (1500 min) | 0 (BYOK only) |
-| Max | 50 hours/mo (3000 min) | 3 hours/mo (180 min) |
+| Pro | 25 hours/mo (1500 min) — **TODO recalc** | 0 (BYOK only) |
+| Max | 50 hours/mo (3000 min) — **TODO recalc** | 3 hours/mo (180 min) — **TODO recalc** |
+
+> **⚠ Caps subject to revision before paid launch.** Brand-time numbers above (25h Pro / 50h+3h Max) were placeholder anchors, not derived from unit-economics math. At current Kyma audio rate (~$0.04/min for `gemini-3-flash-audio`), a cap-hit Pro user costs Echoly ~$60/mo against $9 monthly revenue — a $51/user loss before Stripe fees. Real numbers need:
+>
+> 1. **Actual median usage** from beta cohort (sample once 50+ paying users land). Most subs likely use <30% of cap — math works on aggregate even if heavy users lose money individually.
+> 2. **Real Kyma cost per pipeline path** — subtitle-first cache hit (near-zero cost) vs live audio fallback (Vertex rate) vs realtime (provider-passthrough). Heavily-skewed pipeline mix changes effective per-minute cost.
+> 3. **Target gross margin** — Son to set (50%? 70%? 80% Linear-tier?) — drives cap-and-price design.
+> 4. **Stripe fees + payment-method mix** — 2.9% + $0.30 standard, 0.5% Stripe Tax on top.
+> 5. **Decision before launch**: lower cap (e.g. Pro = 10h not 25h), raise price (e.g. Pro = $14 not $9), or shift cost via better caching / pipeline-tier routing.
+>
+> Free tier 30min is safe — Kyma free monthly window covers it. Realtime Max 3h locked low because realtime is server-metered already (Kyma cost ~3× audio).
 
 ### 3.3 Hard-block UX flow
 
 ```
 Usage events arrive → server aggregates current month total per tier
    │
-   ├─ < 80% cap   → no signal, normal operation
+   ├─ < 90% cap   → no signal, normal operation
    │
-   ├─ 80% cap     → email warning + extension overlay banner
-   │                "You've used 80% of this month's quota"
+   ├─ 90% cap     → email warning + extension overlay banner
+   │                "You've used 90% of this month's quota"
    │                Banner has "View usage" link to dashboard
    │
    ├─ 100% cap    → next dub session start request:
@@ -1049,7 +1059,7 @@ No `commission_amount_usd`, no `first_payment_pct/recurring_pct`. If Affitor API
 | Subscription created | `welcome_paid` | Once per subscription |
 | Payment succeeded (renewal) | `renewal_receipt` | Per renewal |
 | Payment failed | `payment_failed` | Max 3 per failed cycle |
-| Usage 80% | `usage_warning_80` | Once per month per tier |
+| Usage 90% | `usage_warning_90` | Once per month per tier |
 | Usage 100% | `usage_warning_100` | Once per month per tier |
 | Subscription cancelled (scheduled) | `subscription_canceling` | Once |
 | Subscription ended | `subscription_ended` | Once per end |
@@ -1319,7 +1329,7 @@ Bullet list:
 
 - [ ] Onboarding flow: extension banner on first YT visit post-install
 - [ ] Quota modal UI in content.js with Upgrade/BYOK/Cancel buttons
-- [ ] 80% / 100% usage email automation (Cloudflare Cron Trigger)
+- [ ] 90% / 100% usage email automation (Cloudflare Cron Trigger)
 - [ ] Slack alert webhook integration
 - [ ] Admin dashboard at echolyhq.com/admin (Son-only)
 - [ ] CAL launch post Vietnamese draft
@@ -1410,7 +1420,7 @@ This spec is the source of truth for the Echoly subscription system v1.0. Any de
 - Affitor commission POST integration — Day 3
 - Extension subscription mode wiring (popup Sign-in UI, KYMA_BASE swap) — Day 4
 - `~/echoly-web/` landing + dashboard — Day 4
-- Email automation (80%/100% usage warnings via Cron) — Day 5
+- Email automation (90%/100% usage warnings via Cron) — Day 5
 - Production deploy (`wrangler deploy --env production`) — Day 5
 - Soft launch via Cơm AI Lò — Day 5+
 
