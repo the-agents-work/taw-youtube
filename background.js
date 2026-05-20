@@ -109,15 +109,37 @@ async function fetchEcholyUser(token) {
 // Refresh the popup-visible auth snapshot (signedInUser + apiMode) from
 // the cookie. Called on GET_STATE/GET_AUTH so the popup can render the
 // signed-in banner without forcing the user to click anything.
+async function fetchEcholyUsage(token) {
+  if (!token) return null;
+  try {
+    const r = await fetch("https://api.echolyhq.com/v1/usage", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return {
+      standard: d.standard?.used_minutes ?? 0,
+      realtime: d.realtime?.used_minutes ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function refreshAuth() {
   const token = await getEcholySessionToken();
   if (!token) {
     state.signedInUser = null;
+    state.usage = null;
     state.apiMode = (state.kymaKey ?? "").trim() ? "byok" : null;
     return;
   }
-  const user = await fetchEcholyUser(token);
+  const [user, usage] = await Promise.all([
+    fetchEcholyUser(token),
+    fetchEcholyUsage(token),
+  ]);
   state.signedInUser = user;
+  state.usage = usage;
   // BYOK still wins when both present — we display "Signed in" but route
   // via Kyma direct so the user's wholesale balance is what we burn.
   state.apiMode = (state.kymaKey ?? "").trim() ? "byok" : user ? "proxy" : null;
@@ -156,6 +178,7 @@ const state = {
   // start AND on popup-open so the popup can render "Signed in as …".
   apiMode: null,          // "byok" | "proxy" | null
   signedInUser: null,     // { email, tier } or null
+  usage: null,            // { standard: minutes, realtime: minutes } — v0.6.2
   ...DEFAULT_SETTINGS,
 };
 

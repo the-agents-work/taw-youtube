@@ -19,6 +19,17 @@ const accountBand = document.getElementById("account-band");
 const acctEmailEl = document.getElementById("acct-email");
 const acctTierEl = document.getElementById("acct-tier");
 const signOutBtn = document.getElementById("signOutBtn");
+const tierBadge = document.getElementById("tier-badge");
+const usageStdBlock = document.getElementById("usage-std");
+const usageStdLabel = document.getElementById("usage-std-label");
+const usageStdUsed = document.getElementById("usage-std-used");
+const usageStdCap = document.getElementById("usage-std-cap");
+const usageStdFill = document.getElementById("usage-std-fill");
+const usageRtBlock = document.getElementById("usage-rt");
+const usageRtUsed = document.getElementById("usage-rt-used");
+const usageRtCap = document.getElementById("usage-rt-cap");
+const usageRtFill = document.getElementById("usage-rt-fill");
+const usageHint = document.getElementById("usage-hint");
 
 const LANGUAGES = [
   ["en", "English"], ["vi", "Vietnamese"], ["ja", "Japanese"],
@@ -118,24 +129,101 @@ function setKeyBadge(k) {
   }
 }
 
-function renderAccountBand(user, kymaKey) {
+function fmtMin(n) {
+  return Math.round(n || 0).toLocaleString("en-US");
+}
+
+function meterLevel(used, cap) {
+  if (!cap) return "ok";
+  const pct = used / cap;
+  if (pct >= 1.0) return "danger";
+  if (pct >= 0.9) return "warning";
+  return "ok";
+}
+
+function nextResetLabel() {
+  const n = new Date();
+  const next = new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth() + 1, 1));
+  return next.toLocaleDateString("en-US", { month: "long", day: "numeric" });
+}
+
+function renderTierBadge(tier, hasKey) {
+  if (!tierBadge) return;
+  if (hasKey) {
+    tierBadge.dataset.tier = "byok";
+    tierBadge.textContent = "BYOK";
+    return;
+  }
+  tierBadge.dataset.tier = tier || "free";
+  tierBadge.textContent = tier === "max" ? "Max" : tier === "pro" ? "Pro" : "Free";
+}
+
+function renderAccountBand(user, kymaKey, usage) {
   if (!accountBand) return;
+  const hasKey = !!(kymaKey || "").trim();
+
+  // BYOK ưu tiên cao nhất — kể cả khi đang signed in.
+  if (hasKey) {
+    accountBand.dataset.state = "byok";
+    renderTierBadge(user?.tier || "free", true);
+    return;
+  }
   if (user) {
     accountBand.dataset.state = "in";
+    renderTierBadge(user.tier || "free", false);
     if (acctEmailEl) acctEmailEl.textContent = user.email || "";
     if (acctTierEl) {
       const tier = user.tier || "free";
-      acctTierEl.textContent = tier === "max" ? "Max plan" : tier === "pro" ? "Pro plan" : "Free plan";
+      acctTierEl.textContent = tier === "max" ? "Max plan" : tier === "pro" ? "Pro plan" : "Free tier";
       acctTierEl.dataset.tier = tier;
     }
+    renderUsageMeters(user.tier || "free", usage);
   } else {
     accountBand.dataset.state = "out";
+    renderTierBadge("free", false);
+  }
+}
+
+function renderUsageMeters(tier, usage) {
+  if (!usageStdBlock) return;
+  const caps = { free: { std: 30, rt: 0 }, pro: { std: 600, rt: 0 }, max: { std: 3000, rt: 120 } };
+  const c = caps[tier] || caps.free;
+  const u = usage || { standard: 0, realtime: 0 };
+
+  // Standard meter — always shown for signed-in users.
+  usageStdBlock.hidden = false;
+  if (usageStdLabel) usageStdLabel.textContent = tier === "free" ? "Free tier" : "Standard";
+  if (usageStdUsed) usageStdUsed.textContent = fmtMin(u.standard);
+  if (usageStdCap) usageStdCap.textContent = fmtMin(c.std);
+  if (usageStdFill) {
+    const pct = c.std ? Math.min(100, (u.standard / c.std) * 100) : 0;
+    usageStdFill.style.width = `${pct}%`;
+    usageStdFill.dataset.level = meterLevel(u.standard, c.std);
+  }
+
+  // Realtime meter — Max only.
+  if (c.rt > 0) {
+    usageRtBlock.hidden = false;
+    if (usageRtUsed) usageRtUsed.textContent = fmtMin(u.realtime);
+    if (usageRtCap) usageRtCap.textContent = fmtMin(c.rt);
+    if (usageRtFill) {
+      const pct = Math.min(100, (u.realtime / c.rt) * 100);
+      usageRtFill.style.width = `${pct}%`;
+      usageRtFill.dataset.level = meterLevel(u.realtime, c.rt);
+    }
+  } else {
+    usageRtBlock.hidden = true;
+  }
+
+  if (usageHint) {
+    usageHint.hidden = false;
+    usageHint.textContent = `Resets ${nextResetLabel()}`;
   }
 }
 
 function applyState(s) {
   state = { ...state, ...s };
-  renderAccountBand(state.signedInUser, state.kymaKey);
+  renderAccountBand(state.signedInUser, state.kymaKey, state.usage);
   if (typeof state.tier === "string") {
     const allowed = state.tier === "standard" ? "standard" : "realtime";
     if (tierSelect.value !== allowed) tierSelect.value = allowed;
