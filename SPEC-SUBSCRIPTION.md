@@ -47,7 +47,7 @@ New user installs the extension, opens the popup, sees "paste Kyma key" → has 
 |---|---|---|---|
 | **Price monthly** | $0 | $9 | $24.90 |
 | **Price annual** | $0 | $89 (saves 18%) | $199 (saves 33%) |
-| **Standard mode** | 30 min/mo | Unlimited (FUP 25h/mo) | Unlimited (FUP 50h/mo) |
+| **Standard mode** | 30 min/mo | Unlimited (FUP 10h/mo) | Unlimited (FUP 50h/mo) |
 | **Realtime mode** | BYOK only | BYOK only | 2h/mo included + BYOK |
 | **Target languages** | Vi + En only | All 13 | All 13 |
 | **MiniMax voices** | 2 (default) | All 5 | All 5 + experimental |
@@ -102,21 +102,32 @@ Path A and Path B can coexist for the same user. If both BYOK key AND active sub
 | Tier | Standard cap | Realtime cap |
 |---|---|---|
 | Free (server) | 30 min/mo total | 0 (BYOK only) |
-| Pro | 25 hours/mo (1500 min) | 0 (BYOK only) |
+| Pro | 10 hours/mo (600 min) | 0 (BYOK only) |
 | Max | 50 hours/mo (3000 min) | 2 hours/mo (120 min) |
 
-#### Margin math — locked 2026-05-19 at 70% gross margin floor
+#### Cap design — locked 2026-05-19
 
-Worst-case scenario = annual billing (lower monthly revenue split). Standard pipeline = `gemini-3-flash-audio` at `$0.000648/min`. Realtime pipeline = `gpt-realtime-translate` at `$0.046/min` (~70× more expensive). Stripe fees: 2.9% + $0.30 per transaction, ~$0.05/mo Stripe Tax allocation.
+Two goals: hold a 70% gross margin floor AND keep a clear **5× Pro→Max standard ratio** that forces the upsell. Reference: Otter.ai uses the same ratio (Pro 20h → Business 100h). Echoly's prior 2× ratio was too generous — heavy Pro users had no math reason to upgrade.
 
-| Tier | Annual price | Net rev/mo | Cost ceiling (30%) | Cap design | Cost if maxed | Margin if maxed |
+**Margin math** (worst case = annual billing). Standard pipeline `gemini-3-flash-audio` at `$0.000648/min`; realtime `gpt-realtime-translate` at `$0.046/min` (~70× standard). Stripe fees: 2.9% + $0.30 + ~$0.05/mo Stripe Tax.
+
+| Tier | Annual price | Net rev/mo | Cost ceiling (30%) | Cap | Cost if maxed | Margin if maxed |
 |---|---|---|---|---|---|---|
 | Free | $0 | $0 | $0 | 30 min std | $0.019 | absorbed (CAC) |
-| Pro | $89/yr | $7.13 | $2.14 | 25 h std | $0.972 | **86% ✓** |
+| Pro | $89/yr | $7.13 | $2.14 | 10 h std | $0.389 | **95% ✓** |
 | Max std | $199/yr | $16.01 | $4.80 | 50 h std | $1.944 | **88% ✓** |
-| Max realtime | (shared $16.01) | (shared $4.80) | 2 h realtime | $5.52 + std $1.94 = $7.46 worst | **53% worst / ~76% avg** |
+| Max realtime | (shared $16.01) | (shared $4.80) | 2 h realtime | $5.52 (+ std $1.94 = $7.46 worst) | **53% worst / ~76% avg** |
 
-**Standard pipeline is far below the 70% floor** even when maxed — current Pro/Max standard caps stay. **Realtime is the bottleneck** so Max realtime moved from 3h → 2h to keep average-case margin above 70%. Worst case (5% of users max both std + realtime simultaneously) dips to 53% but the realistic-usage average lands at ~76%. If the worst-case shape changes after beta data, options ranked: (a) lower realtime cap to 1h, (b) raise Max monthly to $29.90, (c) push more pipeline to subtitle-first cache.
+**Per-hour value comparison** drives the upsell signal:
+
+| Tier | Std cap | $/h std (monthly billing) |
+|---|---|---|
+| Pro $9 | 10 h | $0.90/h |
+| Max $24.90 | 50 h | $0.50/h |
+
+Max is **44% cheaper per hour** of standard translation than Pro. Math signal: anyone watching >10h/mo upgrades to save money. Realtime stays an exclusive Max bonus, not the upsell trigger.
+
+**If beta data later shows churn at Pro 10h cap** (>20% of paying Pro users hit cap monthly), ranked fallback: (a) raise to 15h (3.3× ratio, Notta pattern), (b) raise Pro monthly to $11–12, (c) keep cap and route harder to Max via in-extension upsell banner.
 
 Free tier 30 min stays — Kyma free monthly window covers most of the cost; treat as customer-acquisition spend.
 
