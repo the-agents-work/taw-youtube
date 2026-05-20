@@ -7,7 +7,7 @@
 
 (() => {
   // ───── F9 — Idempotent version guard ──────────────────────────────────────
-  const ECHOLY_VERSION = "0.5.7";
+  const ECHOLY_VERSION = "0.6.1";
   const GLOBAL_KEY = "__echolyContentVersion";
   if (window[GLOBAL_KEY] === ECHOLY_VERSION) return;
   // Older copy may have left UI behind; clean up before re-installing listeners.
@@ -15,7 +15,12 @@
   window[GLOBAL_KEY] = ECHOLY_VERSION;
 
   // ───── Constants ──────────────────────────────────────────────────────────
+  // KYMA_BASE is the BYOK fallback. v0.6.1: background.js may pass an alt
+  // apiBase (Echoly's server proxy) in settings.apiBase when the user is
+  // signed in without their own Kyma key. Sites that fetch Kyma read the
+  // session-scoped `apiBase` instead of this constant when set.
   const KYMA_BASE = "https://api.kymaapi.com/v1";
+  let apiBase = KYMA_BASE;   // overwritten on each session start
   const OPENAI_CALLS_URL = "https://api.openai.com/v1/realtime/translations/calls";
   const SESSION_LIMIT_MS = 60 * 60 * 1000;
   const SESSION_WARNING_MS = 55 * 60 * 1000;
@@ -564,7 +569,7 @@
     if (!kymaSessionId || !kymaKey) return;
     heartbeatTimer = setInterval(() => {
       if (!session) return;
-      fetch(`${KYMA_BASE}/realtime/translations/sessions/${kymaSessionId}/heartbeat`, {
+      fetch(`${apiBase}/realtime/translations/sessions/${kymaSessionId}/heartbeat`, {
         method: "POST",
         headers: { Authorization: "Bearer " + kymaKey },
       }).catch(() => {});
@@ -596,7 +601,7 @@
   async function endKymaSession(kymaSessionId, kymaKey) {
     if (!kymaSessionId || !kymaKey) return;
     try {
-      await fetch(`${KYMA_BASE}/realtime/translations/sessions/${kymaSessionId}/end`, {
+      await fetch(`${apiBase}/realtime/translations/sessions/${kymaSessionId}/end`, {
         method: "POST",
         headers: { Authorization: "Bearer " + kymaKey },
         keepalive: true,
@@ -639,7 +644,7 @@
 
     let mintResp;
     try {
-      mintResp = await fetch(`${KYMA_BASE}/realtime/translations/client_secrets`, {
+      mintResp = await fetch(`${apiBase}/realtime/translations/client_secrets`, {
         method: "POST",
         headers: { Authorization: "Bearer " + kymaKey, "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1270,7 +1275,7 @@
     );
     let auResp;
     try {
-      auResp = await fetch(`${KYMA_BASE}/audio/understand`, {
+      auResp = await fetch(`${apiBase}/audio/understand`, {
         method: "POST",
         headers: { Authorization: "Bearer " + kymaKey },
         body: understandFd,
@@ -1322,7 +1327,7 @@
 
     let ttsResp;
     try {
-      ttsResp = await fetch(`${KYMA_BASE}/audio/speech`, {
+      ttsResp = await fetch(`${apiBase}/audio/speech`, {
         method: "POST",
         headers: {
           Authorization: "Bearer " + kymaKey,
@@ -1678,7 +1683,7 @@
       `phrasing over literal word-for-word, so the dub fits the same time ` +
       `slot as the original cue.\n\n` +
       `Input: ${JSON.stringify(items)}`;
-    const res = await fetch(`${KYMA_BASE}/chat/completions`, {
+    const res = await fetch(`${apiBase}/chat/completions`, {
       method: "POST",
       headers: { Authorization: "Bearer " + kymaKey, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1717,7 +1722,7 @@
   }
 
   async function renderTTSForSentence(text, voiceId, kymaKey, audioCtx, signal) {
-    const res = await fetch(`${KYMA_BASE}/audio/speech`, {
+    const res = await fetch(`${apiBase}/audio/speech`, {
       method: "POST",
       headers: { Authorization: "Bearer " + kymaKey, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2082,6 +2087,9 @@
   async function startSession(incomingSettings) {
     if (session) return { ok: false, error: "Session already running." };
     settings = { ...incomingSettings };
+    // v0.6.1: background may override the Kyma API base with the Echoly
+    // server proxy (subscription mode). Falls back to the BYOK constant.
+    apiBase = settings.apiBase || KYMA_BASE;
     history = [];
     currentTargetText = "";
     currentSourceText = "";

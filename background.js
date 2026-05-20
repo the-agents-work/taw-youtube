@@ -70,6 +70,79 @@ if (typeof chrome.webRequest?.onCompleted?.addListener === "function") {
   }, YT_CACHE_GC_MS);
 }
 
+// ───── Subscription proxy mode resolution ──────────────────────────────────
+// v0.6.1: extension can route translation API calls through Echoly's worker
+// proxy when the user is signed in on echolyhq.com. The cookie is HttpOnly
+// but chrome.cookies API (privileged) can read it. We send it as Authorization
+// Bearer on every call. BYOK (user pastes their own Kyma key) still wins —
+// when both are present we use the Kyma key for unlimited at wholesale cost.
+
+const KYMA_DIRECT_BASE = "https://api.kymaapi.com/v1";
+const ECHOLY_PROXY_BASE = "https://api.echolyhq.com/v1/proxy";
+
+async function getEcholySessionToken() {
+  try {
+    const c = await chrome.cookies.get({
+      url: "https://echolyhq.com",
+      name: "ec_session",
+    });
+    return c?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchEcholyUser(token) {
+  if (!token) return null;
+  try {
+    const r = await fetch("https://api.echolyhq.com/auth/me", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d.signed_in ? d.user : null;
+  } catch {
+    return null;
+  }
+}
+
+// Refresh the popup-visible auth snapshot (signedInUser + apiMode) from
+// the cookie. Called on GET_STATE/GET_AUTH so the popup can render the
+// signed-in banner without forcing the user to click anything.
+async function refreshAuth() {
+  const token = await getEcholySessionToken();
+  if (!token) {
+    state.signedInUser = null;
+    state.apiMode = (state.kymaKey ?? "").trim() ? "byok" : null;
+    return;
+  }
+  const user = await fetchEcholyUser(token);
+  state.signedInUser = user;
+  // BYOK still wins when both present — we display "Signed in" but route
+  // via Kyma direct so the user's wholesale balance is what we burn.
+  state.apiMode = (state.kymaKey ?? "").trim() ? "byok" : user ? "proxy" : null;
+}
+
+// Resolve which Kyma-shaped API the content script should hit. BYOK has
+// priority — that's the existing v0.5.x flow. If BYOK is empty AND the user
+// is signed in on echolyhq.com, we swap to the proxy endpoint with the
+// session token as the bearer. content.js stays agnostic — same fetch
+// shape, just different URL + bearer value.
+async function resolveApiMode(settings) {
+  const kymaKey = (settings.kymaKey ?? "").trim();
+  if (kymaKey) {
+    return { apiBase: KYMA_DIRECT_BASE, apiKey: kymaKey, mode: "byok", user: null };
+  }
+  const token = await getEcholySessionToken();
+  if (token) {
+    const user = await fetchEcholyUser(token);
+    if (user) {
+      return { apiBase: ECHOLY_PROXY_BASE, apiKey: token, mode: "proxy", user };
+    }
+  }
+  return null;
+}
+
 // In-memory state. Resets when the service worker cold-starts; that's
 // intentional — the user gets a clean idle on cold start.
 const state = {
@@ -79,6 +152,10 @@ const state = {
   tabId: null,
   status: "Ready",
   errorMessage: "",
+  // Subscription proxy mode (v0.6.1). Populated by resolveApiMode at session
+  // start AND on popup-open so the popup can render "Signed in as …".
+  apiMode: null,          // "byok" | "proxy" | null
+  signedInUser: null,     // { email, tier } or null
   ...DEFAULT_SETTINGS,
 };
 
@@ -170,6 +247,20 @@ async function handleStart(settings) {
     return { ok: false, error: "Session already running." };
   }
   await persistSettings(settings || {});
+
+  // v0.6.1: resolve subscription mode before kicking off a session. Either
+  // BYOK Kyma key OR Echoly session cookie must be present.
+  const mode = await resolveApiMode(state);
+  if (!mode) {
+    state.errorMessage = "Sign in at echolyhq.com or paste a Kyma key.";
+    state.status = state.errorMessage;
+    state.connecting = false;
+    broadcastToPopup();
+    return { ok: false, error: state.errorMessage };
+  }
+  state.apiMode = mode.mode;
+  state.signedInUser = mode.user;
+
   let tab;
   try {
     tab = await activeYouTubeTab();
@@ -184,9 +275,17 @@ async function handleStart(settings) {
 
   try {
     await ensureContentScript(tab.id);
+    // Inject apiBase + override kymaKey with the resolved bearer. content.js
+    // is mode-agnostic — it just uses settings.apiBase and the kymaKey value
+    // we hand it as the Authorization bearer for every call.
+    const startSettings = {
+      ...snapshot(),
+      apiBase: mode.apiBase,
+      kymaKey: mode.apiKey,
+    };
     const reply = await relayToContent(tab.id, {
       type: "CONTENT_START",
-      settings: snapshot(),
+      settings: startSettings,
     });
     if (!reply?.ok) {
       throw new Error(reply?.error || "Could not start translation.");
@@ -322,8 +421,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       switch (message?.type) {
         case "GET_STATE":
           await loadSettings();
+          // Refresh auth state opportunistically so the popup can render the
+          // signed-in banner without an extra round trip.
+          await refreshAuth();
           sendResponse({ ok: true, state: snapshot() });
           break;
+        case "GET_AUTH":
+          await refreshAuth();
+          sendResponse({ ok: true, state: snapshot() });
+          break;
+        case "SIGN_OUT_ECHOLY": {
+          const token = await getEcholySessionToken();
+          if (token) {
+            try {
+              await fetch("https://api.echolyhq.com/auth/sign-out", {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+              });
+            } catch {}
+          }
+          // The cookie is HttpOnly + Domain=.echolyhq.com, but chrome.cookies
+          // can remove it across the entire registrable-domain scope.
+          try {
+            await chrome.cookies.remove({ url: "https://echolyhq.com", name: "ec_session" });
+            await chrome.cookies.remove({ url: "https://api.echolyhq.com", name: "ec_session" });
+          } catch {}
+          state.signedInUser = null;
+          state.apiMode = null;
+          broadcastToPopup();
+          sendResponse({ ok: true, state: snapshot() });
+          break;
+        }
         case "START":
           sendResponse(await handleStart(message.settings));
           break;

@@ -15,6 +15,10 @@ const voiceVolumeInput = $("voiceVolume");
 const originalOut = $("originalOut");
 const voiceOut = $("voiceOut");
 const showSourceCheckbox = $("showSource");
+const accountBand = document.getElementById("account-band");
+const acctEmailEl = document.getElementById("acct-email");
+const acctTierEl = document.getElementById("acct-tier");
+const signOutBtn = document.getElementById("signOutBtn");
 
 const LANGUAGES = [
   ["en", "English"], ["vi", "Vietnamese"], ["ja", "Japanese"],
@@ -114,8 +118,24 @@ function setKeyBadge(k) {
   }
 }
 
+function renderAccountBand(user, kymaKey) {
+  if (!accountBand) return;
+  if (user) {
+    accountBand.dataset.state = "in";
+    if (acctEmailEl) acctEmailEl.textContent = user.email || "";
+    if (acctTierEl) {
+      const tier = user.tier || "free";
+      acctTierEl.textContent = tier === "max" ? "Max plan" : tier === "pro" ? "Pro plan" : "Free plan";
+      acctTierEl.dataset.tier = tier;
+    }
+  } else {
+    accountBand.dataset.state = "out";
+  }
+}
+
 function applyState(s) {
   state = { ...state, ...s };
+  renderAccountBand(state.signedInUser, state.kymaKey);
   if (typeof state.tier === "string") {
     const allowed = state.tier === "standard" ? "standard" : "realtime";
     if (tierSelect.value !== allowed) tierSelect.value = allowed;
@@ -262,6 +282,23 @@ kymaKeyInput.addEventListener("change", pushSettings);
 originalVolumeInput.addEventListener("input", onVolumeChange);
 voiceVolumeInput.addEventListener("input", onVolumeChange);
 toggleBtn.addEventListener("click", onToggle);
+
+// Sign-out from the echolyhq.com cookie (works without opening a tab).
+signOutBtn?.addEventListener("click", async () => {
+  signOutBtn.disabled = true;
+  try {
+    const reply = await send({ type: "SIGN_OUT_ECHOLY" });
+    if (reply?.state) applyState(reply.state);
+    else applyState({ signedInUser: null, apiMode: null });
+  } catch (err) {
+    if (!isBenign(err.message)) {
+      statusEl.textContent = err.message;
+      setStateClass("error");
+    }
+  } finally {
+    signOutBtn.disabled = false;
+  }
+});
 
 // Background push subscription
 chrome.runtime.onMessage.addListener((message) => {

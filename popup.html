@@ -25,6 +25,23 @@
     <span class="dot" data-status-dot aria-hidden="true"></span>
   </header>
 
+  <!-- Account band — populated by popup.js from background.GET_AUTH. -->
+  <section id="account-band" class="account-band" data-state="loading">
+    <!-- Signed-out state -->
+    <div class="account-out">
+      <span class="account-msg">Subscribe for a server-managed quota — no API key needed.</span>
+      <a href="https://echolyhq.com/signin" target="_blank" class="account-link">Sign in</a>
+    </div>
+    <!-- Signed-in state (display:none until popup.js flips data-state) -->
+    <div class="account-in">
+      <div class="account-id">
+        <span class="account-email" id="acct-email"></span>
+        <span class="account-tier" id="acct-tier"></span>
+      </div>
+      <button type="button" id="signOutBtn" class="account-link account-link-btn">Sign out</button>
+    </div>
+  </section>
+
   <section class="row">
     <label for="tier">Tier</label>
     <select id="tier">
@@ -45,10 +62,10 @@
 
   <section class="secret">
     <div class="row">
-      <label for="kymaKey">Kyma key</label>
+      <label for="kymaKey">Kyma key <span class="badge" style="font-weight:500;color:var(--label-tertiary);background:transparent;padding:0">— optional, BYOK</span></label>
       <span id="keyBadge" class="badge">missing</span>
     </div>
-    <input id="kymaKey" type="password" placeholder="ky-..." autocomplete="off" spellcheck="false" />
+    <input id="kymaKey" type="password" placeholder="ky-... (leave empty to use subscription)" autocomplete="off" spellcheck="false" />
   </section>
 
   <button class="action" id="toggle">Start</button>
@@ -75,7 +92,7 @@
     <summary>Advanced</summary>
     <div class="advanced-body">
       <div>
-        <strong>Plans</strong>: Free 30 min/month, Pro $9/mo (10h), Max $24.90/mo (50h + 2h realtime). Or paste your Kyma key for unlimited at wholesale cost (above).
+        <strong>Plans</strong>: Free 30 min/month, Pro $9/mo (600 min), Max $24.90/mo (3,000 + 120 min realtime). Annual saves Pro 18% / Max 33%. Or paste a Kyma key above for unlimited at wholesale cost.
       </div>
       <div>
         <a href="https://echolyhq.com/#pricing" target="_blank">Subscribe</a> ·

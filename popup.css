@@ -155,6 +155,64 @@ select:focus, input[type="password"]:focus {
 }
 select:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* v0.6.1: signed-in / signed-out band right under the header. */
+.account-band {
+  margin: 12px 0 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(123, 97, 255, 0.18);
+  background: linear-gradient(135deg, rgba(123, 97, 255, 0.06), rgba(255, 107, 213, 0.04));
+  border-radius: 8px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.account-band[data-state="loading"] { opacity: 0.6; }
+.account-band[data-state="out"] .account-in,
+.account-band[data-state="in"]  .account-out { display: none; }
+.account-band[data-state="out"] .account-out,
+.account-band[data-state="in"]  .account-in  { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex: 1; }
+.account-msg { color: var(--label-secondary); line-height: 1.4; }
+.account-link {
+  color: #7B61FF;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.account-link:hover { text-decoration: underline; }
+.account-link-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+  font-family: inherit;
+}
+.account-id { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.account-email {
+  font-weight: 600;
+  color: var(--label-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+.account-tier {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--label-tertiary);
+}
+.account-tier[data-tier="pro"],
+.account-tier[data-tier="max"] {
+  background: linear-gradient(135deg, #7B61FF, #FF6BD5);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-weight: 700;
+}
+
 .secret {
   display: grid;
   gap: 6px;
