@@ -49,7 +49,7 @@ let state = {
   standardVoice: "marin",
   originalVolume: 18,
   voiceVolume: 100,
-  showSource: false,
+  showSource: true,
   openaiKey: "",
   status: "Ready",
 };
@@ -134,7 +134,8 @@ function applyState(s) {
     voiceVolumeInput.value = state.voiceVolume;
     voiceOut.textContent = state.voiceVolume;
   }
-  if (typeof state.showSource === "boolean") showSourceCheckbox.checked = state.showSource;
+  if (typeof state.showSource === "boolean") showSourceCheckbox.checked = tierSelect.value === "smart" ? true : state.showSource;
+  showSourceCheckbox.disabled = tierSelect.value === "smart";
   if (typeof state.openaiKey === "string") {
     if (openaiKeyInput.value !== state.openaiKey) openaiKeyInput.value = state.openaiKey;
     setKeyBadge(state.openaiKey);
@@ -181,7 +182,7 @@ function readSettings() {
     [voiceKey]: voiceSelect.value,
     originalVolume: Number(originalVolumeInput.value),
     voiceVolume: Number(voiceVolumeInput.value),
-    showSource: showSourceCheckbox.checked,
+    showSource: tier === "smart" ? true : showSourceCheckbox.checked,
     openaiKey: openaiKeyInput.value.trim(),
   };
 }
@@ -249,6 +250,8 @@ tierSelect.addEventListener("change", () => {
   repopulateVoices(wanted);
   voiceSelect.disabled = tierSelect.value === "smart";
   voiceSelect.closest(".row")?.classList.toggle("is-disabled", tierSelect.value === "smart");
+  showSourceCheckbox.checked = tierSelect.value === "smart" ? true : showSourceCheckbox.checked;
+  showSourceCheckbox.disabled = tierSelect.value === "smart";
   pushSettings();
 });
 voiceSelect.addEventListener("change", pushSettings);
@@ -270,6 +273,8 @@ populateLanguages();
 repopulateVoices(state.realtimeVoice);
 voiceSelect.disabled = true;
 voiceSelect.closest(".row")?.classList.add("is-disabled");
+showSourceCheckbox.checked = true;
+showSourceCheckbox.disabled = true;
 
 (async () => {
   try {

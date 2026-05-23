@@ -11,7 +11,7 @@ const DEFAULT_SETTINGS = {
   standardVoice: "marin",
   originalVolume: 18,
   voiceVolume: 100,
-  showSource: false,
+  showSource: true,
   openaiKey: "",
 };
 

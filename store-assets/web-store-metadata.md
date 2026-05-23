@@ -22,7 +22,8 @@ Hear YouTube videos in your language with OpenAI-powered live dubbing. Bring you
 TAW YouTube translates YouTube videos in the language you choose. Click the extension icon, paste your OpenAI API key, pick a mode and target language, then press Start.
 
 Features
-• Smart captions mode reuses YouTube captions when available, translates them ahead of playback, and shows the translated line on the page without dubbing.
+• Smart captions mode reuses English YouTube captions when available, translates them ahead of playback, and shows English + Vietnamese together without dubbing.
+• Click an English word to get a short Vietnamese meaning in context.
 • Realtime mode uses OpenAI Realtime over WebRTC for low-latency translated voice.
 • Standard mode records short audio chunks, transcribes them, translates them, and plays OpenAI text-to-speech.
 • 13 target languages: English, Vietnamese, Japanese, Korean, Chinese, French, Spanish, German, Portuguese, Hindi, Indonesian, Italian, Russian.

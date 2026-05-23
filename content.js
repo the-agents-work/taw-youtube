@@ -80,6 +80,7 @@
   let history = [];
   let currentTargetText = "";
   let currentSourceText = "";
+  const lookupCache = new Map();
   let captionPollTimer = null;
   let heartbeatTimer = null;
   let warningTimer = null;
@@ -289,6 +290,11 @@
       notifyBackground({ type: "CONTENT_STATE", running: false, status: "Stopped" });
       emitEnded("Stopped");
     });
+    elements.source.addEventListener("click", (e) => {
+      const wordEl = e.target.closest?.(".ec-word");
+      if (!wordEl) return;
+      void explainSourceTerm(wordEl.dataset.word || wordEl.textContent || "");
+    });
 
     bindDragResize();
     applyLayout();
@@ -342,6 +348,35 @@
     const lang = settings?.targetLanguage;
     elements.target.dir = RTL_LANGS.has(lang) ? "rtl" : "ltr";
   }
+
+  function renderSourceText(text, interactive = false) {
+    if (!elements.source) return;
+    elements.source.replaceChildren();
+    const value = String(text || "").trim();
+    if (!value) return;
+    if (!interactive) {
+      elements.source.textContent = value.slice(-260);
+      return;
+    }
+    for (const part of value.split(/(\s+)/)) {
+      if (!part) continue;
+      if (/^\s+$/.test(part)) {
+        elements.source.append(document.createTextNode(part));
+        continue;
+      }
+      const cleaned = part.replace(/^[^\w']+|[^\w']+$/g, "");
+      if (!cleaned || !/[A-Za-z]/.test(cleaned)) {
+        elements.source.append(document.createTextNode(part));
+        continue;
+      }
+      const span = document.createElement("button");
+      span.type = "button";
+      span.className = "ec-word";
+      span.dataset.word = cleaned;
+      span.textContent = part;
+      elements.source.appendChild(span);
+    }
+  }
   // Toast accepts plain text + optional CTA. Built via DOM APIs (not innerHTML)
   // because the text often comes from upstream API errors — a crafted error
   // body would otherwise be an XSS vector inside youtube.com's origin.
@@ -352,7 +387,7 @@
     let toast = root.querySelector(".ec-toast");
     if (toast) toast.remove();
     toast = document.createElement("div");
-    toast.className = "ec-toast";
+    toast.className = "ec-toast" + (opts?.kind === "info" ? " ec-toast-info" : "");
     toast.textContent = String(text || "");
     if (opts && opts.cta) {
       toast.append(" ");
@@ -365,6 +400,55 @@
     }
     root.appendChild(toast);
     setTimeout(() => toast.remove(), durationMs);
+  }
+
+  async function explainSourceTerm(term) {
+    const cleaned = String(term || "").trim().replace(/^[^\w']+|[^\w']+$/g, "");
+    if (!cleaned || !settings?.openaiKey) return;
+    const context = currentSourceText || "";
+    const key = `${cleaned.toLowerCase()}|${context.slice(0, 120).toLowerCase()}`;
+    if (lookupCache.has(key)) {
+      showToast(`${cleaned}: ${lookupCache.get(key)}`, { kind: "info" }, 9000);
+      return;
+    }
+    showToast(`Tra "${cleaned}"...`, { kind: "info" }, 4000);
+    try {
+      const res = await fetch(`${apiBase}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + settings.openaiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a concise English-Vietnamese glossary. Explain the selected English word or phrase in Vietnamese using at most 12 words. Include the best meaning for the given video subtitle context only.",
+            },
+            {
+              role: "user",
+              content: `Term: ${cleaned}\nContext: ${context}`,
+            },
+          ],
+          temperature: 0.1,
+        }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        const parsed = parseOpenAIError(res.status, txt);
+        showToast(parsed.user || "Lookup failed", { kind: "info" }, 7000);
+        return;
+      }
+      const json = await res.json();
+      const answer = String(json?.choices?.[0]?.message?.content || "").trim();
+      if (!answer) return;
+      lookupCache.set(key, answer);
+      showToast(`${cleaned}: ${answer}`, { kind: "info" }, 9000);
+    } catch {
+      showToast("Lookup failed. Try again.", { kind: "info" }, 5000);
+    }
   }
   function removeOverlay() {
     if (!root) return;
@@ -505,7 +589,7 @@
       lastSeenCaption = text;
       currentSourceText = text;
       if (elements.source) {
-        elements.source.textContent = text.slice(-220);
+        renderSourceText(text.slice(-220), false);
       }
     }, CAPTION_POLL_MS);
   }
@@ -517,7 +601,7 @@
   }
   function applySourceVisibility() {
     if (!elements.source) return;
-    elements.source.hidden = !settings?.showSource;
+    elements.source.hidden = !(settings?.showSource || session?.type === "smart-captions");
   }
 
   // ───── F5 — captureStream re-acquisition with playback nudge ──────────────
@@ -1529,10 +1613,10 @@
     const score = (t) => {
       const code = (t.languageCode || "").toLowerCase().split("-")[0];
       let s = 0;
-      // Native target-lang track is gold (human-translated subs)
-      if (code === targetCode) s += 100;
-      // English source most often available + best translation source
-      if (code === "en") s += 50;
+      // This extension is optimized for English YouTube learning: prefer the
+      // original English track, then translate it to the target language.
+      if (code === "en") s += targetCode === "en" ? 100 : 120;
+      if (code === targetCode) s += 30;
       // Manual > ASR (manual has no `kind`, ASR has kind: "asr")
       if (!t.kind || t.kind !== "asr") s += 10;
       return s;
@@ -2155,8 +2239,9 @@
       setTargetText(translated);
     }
     currentSourceText = source;
-    if (elements.source && settings.showSource) {
-      elements.source.textContent = source.slice(-220);
+    if (elements.source && (settings.showSource || s.type === "smart-captions")) {
+      elements.source.hidden = false;
+      renderSourceText(source.slice(-260), s.type === "smart-captions");
     }
   }
 
