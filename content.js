@@ -1,4 +1,4 @@
-// Echoly content script — owns WebRTC PeerConnection lifecycle, the in-page
+// TAW YouTube content script — owns WebRTC PeerConnection lifecycle, the in-page
 // overlay panel, and YT video element capture. Background tells us when to
 // start/stop/update; we tell background what's happening via CONTENT_STATE.
 //
@@ -7,28 +7,24 @@
 
 (() => {
   // ───── F9 — Idempotent version guard ──────────────────────────────────────
-  const ECHOLY_VERSION = "0.6.1";
-  const GLOBAL_KEY = "__echolyContentVersion";
-  if (window[GLOBAL_KEY] === ECHOLY_VERSION) return;
+  const TAW_YOUTUBE_VERSION = "0.7.0";
+  const GLOBAL_KEY = "__tawYoutubeContentVersion";
+  if (window[GLOBAL_KEY] === TAW_YOUTUBE_VERSION) return;
   // Older copy may have left UI behind; clean up before re-installing listeners.
   document.querySelectorAll(".ec-root").forEach((el) => el.remove());
-  window[GLOBAL_KEY] = ECHOLY_VERSION;
+  window[GLOBAL_KEY] = TAW_YOUTUBE_VERSION;
 
   // ───── Constants ──────────────────────────────────────────────────────────
-  // KYMA_BASE is the BYOK fallback. v0.6.1: background.js may pass an alt
-  // apiBase (Echoly's server proxy) in settings.apiBase when the user is
-  // signed in without their own Kyma key. Sites that fetch Kyma read the
-  // session-scoped `apiBase` instead of this constant when set.
-  const KYMA_BASE = "https://api.kymaapi.com/v1";
-  let apiBase = KYMA_BASE;   // overwritten on each session start
-  const OPENAI_CALLS_URL = "https://api.openai.com/v1/realtime/translations/calls";
+  const OPENAI_BASE = "https://api.openai.com/v1";
+  let apiBase = OPENAI_BASE;   // overwritten on each session start
+  const OPENAI_CALLS_URL = "https://api.openai.com/v1/realtime/calls";
   const SESSION_LIMIT_MS = 60 * 60 * 1000;
   const SESSION_WARNING_MS = 55 * 60 * 1000;
   const HEARTBEAT_MS = 30_000;
   const CAPTION_POLL_MS = 350;
   const HISTORY_MAX = 16;
   const VOICE_GAIN_MAX = 2.0;          // unity at slider 50, 2× boost at 100
-  const LAYOUT_KEY = "echolyOverlayLayout";
+  const LAYOUT_KEY = "tawYoutubeOverlayLayout";
   const RTL_LANGS = new Set(["ar", "fa", "he", "ur"]);
 
   const LANGUAGES = [
@@ -40,17 +36,24 @@
   ];
   const LANG_NAME = Object.fromEntries(LANGUAGES);
   const REALTIME_VOICES = [
-    "marin", "alloy", "ash", "ballad", "coral",
-    "echo", "sage", "shimmer", "verse",
+    "marin", "alloy", "ash", "ballad", "coral", "echo", "fable",
+    "onyx", "nova", "sage", "shimmer", "verse", "cedar",
   ];
-  // Standard tier voices — Minimax `speech-02-turbo` IDs. Cross-language: each
-  // voice handles all 13 target languages. Curated 2026-05-08.
+  // Standard tier voices use OpenAI's speech endpoint.
   const STANDARD_VOICES = [
-    ["English_magnetic_voiced_man",   "Magnetic Man"],
-    ["English_captivating_female1",   "Captivating Female"],
-    ["English_ManWithDeepVoice",      "Deep Voice Man"],
-    ["English_ConfidentWoman",        "Confident Woman"],
-    ["Chinese (Mandarin)_News_Anchor","News Anchor"],
+    ["marin", "Marin"],
+    ["alloy", "Alloy"],
+    ["ash", "Ash"],
+    ["ballad", "Ballad"],
+    ["coral", "Coral"],
+    ["echo", "Echo"],
+    ["fable", "Fable"],
+    ["onyx", "Onyx"],
+    ["nova", "Nova"],
+    ["sage", "Sage"],
+    ["shimmer", "Shimmer"],
+    ["verse", "Verse"],
+    ["cedar", "Cedar"],
   ];
   const STANDARD_DEFAULT_VOICE = STANDARD_VOICES[0][0];
 
@@ -198,7 +201,7 @@
               <path d="M7 9v6M11 6v12M15 8v8M19 11v2"/>
             </svg>
           </span>
-          <span class="ec-wordmark">Echoly</span>
+          <span class="ec-wordmark">TAW YouTube</span>
           <span class="ec-state" data-ec-status>Ready</span>
         </span>
         <span class="ec-spacer"></span>
@@ -540,41 +543,26 @@
     throw new Error("YouTube audio not ready. Press play, then Start again.");
   }
 
-  // ───── Kyma error parser ──────────────────────────────────────────────────
-  function parseKymaError(status, errText) {
+  // ───── OpenAI error parser ────────────────────────────────────────────────
+  function parseOpenAIError(status, errText) {
     try {
       const parsed = JSON.parse(errText);
       const err = parsed.error || {};
-      if (err.code === "insufficient_balance") {
-        const cta = err.cta_url || "https://kymaapi.com/billing";
-        return { user: "Out of Kyma balance.", cta, ctaLabel: "Top up" };
+      if (err.code === "insufficient_quota") {
+        return {
+          user: "OpenAI quota or billing limit reached.",
+          cta: "https://platform.openai.com/usage",
+          ctaLabel: "Usage",
+        };
       }
-      if (err.code === "too_many_sessions") {
-        return { user: "Three sessions already running. Stop one or wait." };
-      }
-      if (err.code === "upstream_error") {
-        return { user: "Provider unreachable. Try again shortly." };
-      }
-      if (err.code === "rate_limited") {
-        return { user: "Provider rate limit hit. Wait 30s." };
-      }
-      if (err.message) return { user: "Kyma " + status + ": " + err.message };
+      if (err.code === "rate_limit_exceeded") return { user: "OpenAI rate limit hit. Wait 30s." };
+      if (err.message) return { user: "OpenAI " + status + ": " + err.message };
     } catch {}
-    return { user: "Kyma " + status + ": " + (errText || "").slice(0, 160) };
+    return { user: "OpenAI " + status + ": " + (errText || "").slice(0, 160) };
   }
 
-  // ───── Heartbeat + session timer (60-min cap, one-shot 55-min warning) ────
-  function startHeartbeat(kymaSessionId, kymaKey) {
-    stopHeartbeat();
-    if (!kymaSessionId || !kymaKey) return;
-    heartbeatTimer = setInterval(() => {
-      if (!session) return;
-      fetch(`${apiBase}/realtime/translations/sessions/${kymaSessionId}/heartbeat`, {
-        method: "POST",
-        headers: { Authorization: "Bearer " + kymaKey },
-      }).catch(() => {});
-    }, HEARTBEAT_MS);
-  }
+  // ───── Session timer (60-min cap, one-shot 55-min warning) ────────────────
+  function startHeartbeat() {}
   function stopHeartbeat() {
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
   }
@@ -597,17 +585,7 @@
     if (limitTimer) { clearTimeout(limitTimer); limitTimer = null; }
   }
 
-  // ───── End Kyma session (release collateral immediately, no 90s wait) ─────
-  async function endKymaSession(kymaSessionId, kymaKey) {
-    if (!kymaSessionId || !kymaKey) return;
-    try {
-      await fetch(`${apiBase}/realtime/translations/sessions/${kymaSessionId}/end`, {
-        method: "POST",
-        headers: { Authorization: "Bearer " + kymaKey },
-        keepalive: true,
-      });
-    } catch {}
-  }
+  async function endOpenAIRealtimeSession() {}
 
   // Waits for the PeerConnection to reach "connected" state, or resolves
   // false on timeout / failure. Used to gate `video.play()` on the
@@ -633,34 +611,44 @@
     });
   }
 
-  // ───── Session core (build PeerConnection through Kyma → OpenAI) ─────────
+  // ───── Session core (build PeerConnection through OpenAI) ────────────────
   async function buildRealtimeSession(token, audioStream, opts) {
-    const kymaKey = opts.kymaKey;
+    const openaiKey = opts.openaiKey;
     const lang = opts.targetLanguage || "vi";
-    const voice = opts.realtimeVoice || "";
+    const voice = opts.realtimeVoice || "marin";
+    const langName = LANG_NAME[lang] || lang;
 
     setStatusText("Connecting");
     setOverlayState("connecting");
 
     let mintResp;
     try {
-      mintResp = await fetch(`${apiBase}/realtime/translations/client_secrets`, {
+      mintResp = await fetch(`${apiBase}/realtime/client_secrets`, {
         method: "POST",
-        headers: { Authorization: "Bearer " + kymaKey, "Content-Type": "application/json" },
+        headers: { Authorization: "Bearer " + openaiKey, "Content-Type": "application/json" },
         body: JSON.stringify({
+          expires_after: { anchor: "created_at", seconds: 600 },
           session: {
-            model: "gpt-realtime-translate",
-            audio: { output: { language: lang, ...(voice ? { voice } : {}) } },
+            type: "realtime",
+            model: "gpt-realtime",
+            instructions:
+              `You are a live YouTube dubbing translator. Listen to the incoming ` +
+              `speaker audio and translate it into ${langName}. Speak only the ` +
+              `translation. Do not answer questions, add commentary, describe ` +
+              `the task, or repeat the source language unless it is a name, ` +
+              `brand, code term, or technical term. Keep the translation concise ` +
+              `so it matches the speaker's pacing.`,
+            audio: { output: { voice } },
           },
         }),
       });
     } catch (e) {
-      throw new Error("Network error reaching Kyma.");
+      throw new Error("Network error reaching OpenAI.");
     }
     if (token !== pageToken) throw new Error("Stale session.");
     if (!mintResp.ok) {
       const text = await mintResp.text().catch(() => "");
-      const parsed = parseKymaError(mintResp.status, text);
+      const parsed = parseOpenAIError(mintResp.status, text);
       const err = new Error(parsed.user);
       err.cta = parsed.cta;
       err.ctaLabel = parsed.ctaLabel;
@@ -669,8 +657,7 @@
     const mint = await mintResp.json();
     if (token !== pageToken) throw new Error("Stale session.");
     const clientSecret = mint.value;
-    const kymaSessionId = mint.kyma_session_id;
-    if (!clientSecret) throw new Error("Kyma response missing client_secret.");
+    if (!clientSecret) throw new Error("OpenAI response missing client secret.");
 
     const pc = new RTCPeerConnection();
     for (const track of audioStream.getAudioTracks()) pc.addTrack(track, audioStream);
@@ -707,8 +694,6 @@
       remoteAudio: null,
       audioCtx: preCtx,
       outputGain: preGain,
-      kymaSessionId,
-      kymaKey,
       targetLanguage: lang,
       realtimeVoice: voice,
     };
@@ -783,7 +768,6 @@
     if (!sdpResp.ok) {
       const t = await sdpResp.text().catch(() => "");
       try { pc.close(); } catch {}
-      void endKymaSession(kymaSessionId, kymaKey);
       throw new Error(`SDP exchange ${sdpResp.status}: ${t.slice(0, 160)}`);
     }
     const answerSdp = await sdpResp.text();
@@ -907,7 +891,7 @@
       lastRateToastAt = Date.now();
       const r = Math.round(rate * 100) / 100;
       showToast(
-        `Echoly works best at 1× speed (current: ${r}×). Translation may drift behind the speaker.`,
+        `TAW YouTube works best at 1× speed (current: ${r}×). Translation may drift behind the speaker.`,
         5000,
       );
     };
@@ -956,7 +940,7 @@
     let newSession;
     try {
       newSession = await buildRealtimeSession(newToken, session.stream, {
-        kymaKey: settings.kymaKey,
+        openaiKey: settings.openaiKey,
         targetLanguage: newSettings.targetLanguage,
         realtimeVoice: newSettings.realtimeVoice,
       });
@@ -993,19 +977,16 @@
           if (prevSession.audioCtx) prevSession.audioCtx.close();
           prevSession.pc?.close();
         } catch {}
-        void endKymaSession(prevSession.kymaSessionId, prevSession.kymaKey);
         prevSession = null;
       }
     }, 400);
 
-    // Heartbeat for new session, drop old heartbeat
-    startHeartbeat(newSession.kymaSessionId, newSession.kymaKey);
     applyVolumes(settings.originalVolume, settings.voiceVolume);
   }
 
-  // ───── Standard tier (chunked: whisper → gpt-4o-mini → minimax) ───────────
+  // ───── Standard tier (chunked: transcribe → translate → TTS) ──────────────
   // Pipeline lives entirely client-side. Each chunk independently calls three
-  // Kyma endpoints; chunks process in parallel so chunk N+1 starts recording
+  // OpenAI endpoints; chunks process in parallel so chunk N+1 starts recording
   // while chunk N is still in TTS. Playback queue uses Web Audio scheduling
   // so dub plays back-to-back even when pipeline latency varies per chunk.
   async function startStandardSession() {
@@ -1055,8 +1036,7 @@
       remoteAudio: null,
       pc: null,
       dc: null,
-      kymaSessionId: null,
-      kymaKey: settings.kymaKey,
+      openaiKey: settings.openaiKey,
       recorderMime,
       activeRecorder: null,
       nextPlayAt: 0,
@@ -1064,7 +1044,7 @@
       // One AbortController for the whole session — every fetch in
       // processStandardChunk hangs off this signal so a Stop click cancels
       // in-flight whisper/translate/TTS calls instead of silently burning
-      // ~5-10s of Kyma credits per orphaned pipeline.
+      // ~5-10s of OpenAI usage per orphaned pipeline.
       abortController: new AbortController(),
     };
     session = newSession;
@@ -1108,12 +1088,9 @@
     return "";
   }
 
-  // Kyma's transcription gateway whitelists mp3/wav/m4a only — Chrome
-  // MediaRecorder can only emit webm/opus or mp4. So we decode the recorder
-  // blob locally and re-encode as 16-bit PCM WAV before uploading. The
-  // overhead is ~30ms per 5s chunk on M-series Macs and bandwidth roughly
-  // doubles (opus 24kbps → wav 16-bit mono 16kHz ≈ 256kbps), which is fine
-  // for a 5s window.
+  // Decode the recorder blob and re-encode as 16-bit PCM WAV before upload.
+  // This keeps the transcribe request predictable across Chrome recorder
+  // MIME choices.
   async function webmBlobToWav(blob, sharedCtx) {
     const arrayBuf = await blob.arrayBuffer();
     let ownCtx;
@@ -1234,11 +1211,9 @@
     const lang = settings.targetLanguage || "vi";
     const langName = LANG_NAME[lang] || lang;
     const voiceId = settings.standardVoice || STANDARD_DEFAULT_VOICE;
-    const kymaKey = s.kymaKey;
+    const openaiKey = s.openaiKey;
 
-    // Re-encode webm/opus blob → 16 kHz mono WAV. Kyma's audio gateway
-    // whitelists mp3/wav/m4a only; WAV is the simplest of the three to emit
-    // from MediaRecorder output via decode + resample.
+    // Re-encode webm/opus blob → 16 kHz mono WAV.
     let wavBlob;
     try {
       wavBlob = await webmBlobToWav(blob, s.audioCtx);
@@ -1247,63 +1222,73 @@
     }
     if (s !== session || s.token !== t) return;
 
-    // 1+2 COMBINED via Vertex Gemini Audio. /v1/audio/understand takes an
-    // audio file + a question and returns text — we prompt it to translate
-    // straight into the target language so we collapse the legacy 2-step
-    // pipeline (Whisper transcribe → Gemini chat translate) into one call.
-    // Wins: ~50% latency, ~50% cost, no more AI-Studio free-tier flakiness
-    // (Vertex SA route has project-level quota, see kyma-api/src/providers/
-    // google-vertex.ts). Wave 1 + Wave 2 of Vertex migration, 2026-05-16.
-    const durationSec = STANDARD_CHUNK_MS / 1000;
-    const understandFd = new FormData();
-    understandFd.append("file", wavBlob, "chunk.wav");
-    understandFd.append("model", "gemini-3-flash-audio");
-    understandFd.append("duration_sec", String(durationSec));
-    understandFd.append(
-      "question",
-      `Translate the spoken English in this audio into ${langName}. ` +
-      `Output ONLY the translated sentence(s) for live dubbing — no quotes, ` +
-      `no labels, no commentary, no transcription of the original. ` +
-      // SF7 — concise output reduces TTS-vs-source duration drift in
-      // verbose target languages (VI/JA/KO). Prefer natural shorter
-      // phrasing over literal word-for-word; the goal is a dub that
-      // matches the speaker's pacing, not a textbook translation.
-      `Be CONCISE — match the original speech duration. Prefer shorter ` +
-      `natural phrasing; drop filler words. Preserve ` +
-      `names, brand names, and technical terms verbatim. If the audio is ` +
-      `silent or non-speech, output an empty string.`,
-    );
-    let auResp;
+    const transcribeFd = new FormData();
+    transcribeFd.append("file", wavBlob, "chunk.wav");
+    transcribeFd.append("model", "gpt-4o-mini-transcribe");
+    transcribeFd.append("response_format", "json");
+    let transcribeResp;
     try {
-      auResp = await fetch(`${apiBase}/audio/understand`, {
+      transcribeResp = await fetch(`${apiBase}/audio/transcriptions`, {
         method: "POST",
-        headers: { Authorization: "Bearer " + kymaKey },
-        body: understandFd,
+        headers: { Authorization: "Bearer " + openaiKey },
+        body: transcribeFd,
         signal: s.abortController.signal,
       });
     } catch {
       return;  // network blip OR aborted via Stop; next chunk will recover
     }
     if (s !== session || s.token !== t) return;
-    if (!auResp.ok) {
-      const txt = await auResp.text().catch(() => "");
-      const parsed = parseKymaError(auResp.status, txt);
+    if (!transcribeResp.ok) {
+      const txt = await transcribeResp.text().catch(() => "");
+      const parsed = parseOpenAIError(transcribeResp.status, txt);
       showStandardError(parsed);
       return;
     }
-    const au = await auResp.json().catch(() => ({}));
-    const targetText = String(au?.answer || "").trim();
+    const transcription = await transcribeResp.json().catch(() => ({}));
+    const sourceText = String(transcription?.text || "").trim();
+    if (!sourceText || sourceText.length < 2) return;
+
+    let translateResp;
+    try {
+      translateResp = await fetch(`${apiBase}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: "Bearer " + openaiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content:
+                `You translate YouTube speech for live dubbing. Output only ` +
+                `the ${langName} translation. Keep it concise, natural, and ` +
+                `close to the source duration. Preserve names, brand names, ` +
+                `code terms, and technical terms verbatim.`,
+            },
+            { role: "user", content: sourceText },
+          ],
+          temperature: 0.2,
+        }),
+        signal: s.abortController.signal,
+      });
+    } catch {
+      return;
+    }
+    if (s !== session || s.token !== t) return;
+    if (!translateResp.ok) {
+      const txt = await translateResp.text().catch(() => "");
+      const parsed = parseOpenAIError(translateResp.status, txt);
+      showStandardError(parsed);
+      return;
+    }
+    const translated = await translateResp.json().catch(() => ({}));
+    const targetText = String(translated?.choices?.[0]?.message?.content || "").trim();
     if (!targetText || targetText.length < 2) return;
-    // Source text is no longer surfaced separately by the audio-understand
-    // path. Keep the source caption pane (settings.showSource) backed by
-    // YouTube's own native captions via the existing startCaptionPoll loop —
-    // that's the original behavior before Whisper transcription was wired
-    // into the side pane.
+    currentSourceText = sourceText;
     currentTargetText = targetText;
     setTargetText(targetText);
     setOverlayState("live");
 
-    // 3. TTS via Minimax. mp3 returned directly as audio bytes.
+    // 3. TTS via OpenAI. mp3 returned directly as audio bytes.
     //
     // SF7 — adaptive speed to prevent cumulative drift. TTS in verbose
     // target languages (VI ~1.6x English, JA ~1.4x, KO ~1.5x) takes
@@ -1330,13 +1315,13 @@
       ttsResp = await fetch(`${apiBase}/audio/speech`, {
         method: "POST",
         headers: {
-          Authorization: "Bearer " + kymaKey,
+          Authorization: "Bearer " + openaiKey,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "minimax-speech-turbo",
+          model: "gpt-4o-mini-tts",
           input: targetText,
-          voice_id: voiceId,
+          voice: voiceId,
           response_format: "mp3",
           speed: ttsSpeed,
         }),
@@ -1348,7 +1333,7 @@
     if (s !== session || s.token !== t) return;
     if (!ttsResp.ok) {
       const txt = await ttsResp.text().catch(() => "");
-      const parsed = parseKymaError(ttsResp.status, txt);
+      const parsed = parseOpenAIError(ttsResp.status, txt);
       showStandardError(parsed);
       return;
     }
@@ -1386,7 +1371,7 @@
 
   // ───── Subtitle-first tier (CC fetch → batch translate → batch TTS) ───────
   // Pre-fetches the platform caption track (YouTube only in v0.3), batches the
-  // whole transcript through Gemini in one shot, then renders MiniMax TTS in
+  // whole transcript through OpenAI chat in one shot, then renders OpenAI TTS in
   // rolling waves and schedules playback at exact caption timestamps. Zero
   // chase delay (cf. Standard chunked pipeline ~5s lag) when CC is available.
   //
@@ -1665,10 +1650,10 @@
   }
 
   // Strict JSON-array request keeps alignment trivial — output[i] maps to
-  // input[i]. If Gemini misformats and lengths differ, we fall back to the
+  // input[i]. If the model misformats and lengths differ, we fall back to the
   // English source for the unmapped slots so the user still hears something
   // at that timestamp instead of silence.
-  async function batchTranslateSubtitles(sentences, langName, kymaKey, signal) {
+  async function batchTranslateSubtitles(sentences, langName, openaiKey, signal) {
     const items = sentences.map((s) => s.text);
     const prompt =
       `Translate these ${items.length} subtitle lines to ${langName}. ` +
@@ -1685,9 +1670,9 @@
       `Input: ${JSON.stringify(items)}`;
     const res = await fetch(`${apiBase}/chat/completions`, {
       method: "POST",
-      headers: { Authorization: "Bearer " + kymaKey, "Content-Type": "application/json" },
+      headers: { Authorization: "Bearer " + openaiKey, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gemini-2.5-flash",
+        model: "gpt-4o-mini",
         messages: [
           { role: "system", content: "You translate subtitles for live dubbing. Output strict JSON only." },
           { role: "user", content: prompt },
@@ -1699,7 +1684,7 @@
     });
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
-      throw parseKymaError(res.status, txt);
+      throw parseOpenAIError(res.status, txt);
     }
     const json = await res.json();
     const raw = json?.choices?.[0]?.message?.content || "";
@@ -1721,21 +1706,21 @@
     });
   }
 
-  async function renderTTSForSentence(text, voiceId, kymaKey, audioCtx, signal) {
+  async function renderTTSForSentence(text, voiceId, openaiKey, audioCtx, signal) {
     const res = await fetch(`${apiBase}/audio/speech`, {
       method: "POST",
-      headers: { Authorization: "Bearer " + kymaKey, "Content-Type": "application/json" },
+      headers: { Authorization: "Bearer " + openaiKey, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "minimax-speech-turbo",
+        model: "gpt-4o-mini-tts",
         input: text,
-        voice_id: voiceId,
+        voice: voiceId,
         response_format: "mp3",
       }),
       signal,
     });
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
-      throw parseKymaError(res.status, txt);
+      throw parseOpenAIError(res.status, txt);
     }
     const arrayBuf = await res.arrayBuffer();
     return audioCtx.decodeAudioData(arrayBuf);
@@ -1778,8 +1763,7 @@
       remoteAudio: null,
       pc: null,
       dc: null,
-      kymaSessionId: null,
-      kymaKey: settings.kymaKey,
+      openaiKey: settings.openaiKey,
       abortController,
       // subtitle-first specific
       sentences: [],          // [{start, end, text, _buffer?}] post-regrouping
@@ -1953,7 +1937,7 @@
       if (s !== session || s.stopFlag) return;
       const sliceEnd = Math.min(i + SUBFIRST_BATCH_SIZE, endIdx);
       const slice = s.sentences.slice(i, sliceEnd);
-      const translations = await batchTranslateSubtitles(slice, langName, s.kymaKey, s.abortController.signal);
+      const translations = await batchTranslateSubtitles(slice, langName, s.openaiKey, s.abortController.signal);
       if (s !== session || s.stopFlag) return;
       for (let j = 0; j < translations.length; j++) s.translations[i + j] = translations[j];
     }
@@ -1974,7 +1958,7 @@
         const idx = queue[cursor++];
         try {
           const buf = await renderTTSForSentence(
-            s.translations[idx], voiceId, s.kymaKey, s.audioCtx, s.abortController.signal,
+            s.translations[idx], voiceId, s.openaiKey, s.audioCtx, s.abortController.signal,
           );
           if (s !== session || s.stopFlag) return;
           s.sentences[idx]._buffer = buf;
@@ -2087,9 +2071,7 @@
   async function startSession(incomingSettings) {
     if (session) return { ok: false, error: "Session already running." };
     settings = { ...incomingSettings };
-    // v0.6.1: background may override the Kyma API base with the Echoly
-    // server proxy (subscription mode). Falls back to the BYOK constant.
-    apiBase = settings.apiBase || KYMA_BASE;
+    apiBase = settings.apiBase || OPENAI_BASE;
     history = [];
     currentTargetText = "";
     currentSourceText = "";
@@ -2097,7 +2079,7 @@
     if (settings.tier === "standard") {
       // Subtitle-first path is YouTube-only in v0.3 and quietly falls back to
       // the chunked Standard pipeline when no caption track is available, so
-      // existing users keep the Standard contract (lag tier, MiniMax voice)
+      // existing users keep the Standard contract (lag tier, OpenAI voice)
       // without needing to flip any setting.
       //
       // Skip subtitle-first for live streams: it pauses the video to render
@@ -2146,7 +2128,7 @@
     let newSession;
     try {
       newSession = await buildRealtimeSession(token, stream, {
-        kymaKey: settings.kymaKey,
+        openaiKey: settings.openaiKey,
         targetLanguage: settings.targetLanguage,
         realtimeVoice: settings.realtimeVoice,
       });
@@ -2180,7 +2162,6 @@
     } else {
       setStatusText("Almost ready");
     }
-    startHeartbeat(session.kymaSessionId, session.kymaKey);
     startSessionTimer();
     applyVolumes(settings.originalVolume, settings.voiceVolume);
     applySourceVisibility();
@@ -2198,10 +2179,8 @@
       setOverlayState("live");
       emitState({ paused: false, status: "Translating" });
     };
-    // Realtime tier billing is per-minute via Kyma — stopping promptly on
-    // video end matters more here than for Standard. The end event maps to
-    // a clean session stop which fires the Kyma /end POST and releases the
-    // realtime session collateral.
+    // Stop promptly on video end so local capture, the peer connection, and
+    // the audio graph are torn down immediately.
     const onYTEnded = () => {
       stopSession("video-ended");
       emitEnded("Video ended.");
@@ -2268,8 +2247,8 @@
     if (session) {
       try {
         // Standard tier: halt the recorder loop so no further chunks fire,
-        // and abort any in-flight whisper/translate/TTS fetch so we stop
-        // burning Kyma credits the moment the user clicks Stop.
+        // and abort any in-flight transcribe/translate/TTS fetch so we stop
+        // spending OpenAI usage the moment the user clicks Stop.
         if (session.type === "standard") {
           session.stopFlag = true;
           if (session.abortController) {
@@ -2297,15 +2276,10 @@
         if (session.pc) session.pc.close();
         if (session.stream) session.stream.getTracks().forEach((t) => t.stop());
       } catch {}
-      // Realtime tier holds Kyma session collateral; standard tier doesn't.
-      if (session.kymaSessionId) {
-        void endKymaSession(session.kymaSessionId, session.kymaKey);
-      }
       session = null;
     }
     if (prevSession) {
       try { prevSession.pc?.close(); } catch {}
-      void endKymaSession(prevSession.kymaSessionId, prevSession.kymaKey);
       prevSession = null;
     }
     history = [];
@@ -2365,11 +2339,9 @@
     }
   }, 500);
 
-  // ───── Tab unload — fire /end with keepalive ──────────────────────────────
+  // ───── Tab unload ────────────────────────────────────────────────────────
   const handleUnload = () => {
-    if (session) {
-      void endKymaSession(session.kymaSessionId, session.kymaKey);
-    }
+    if (session) void endOpenAIRealtimeSession();
   };
   window.addEventListener("beforeunload", handleUnload);
   window.addEventListener("pagehide", handleUnload);
@@ -2379,7 +2351,7 @@
     (async () => {
       switch (msg?.type) {
         case "CONTENT_PING":
-          sendResponse({ ok: true, version: ECHOLY_VERSION });
+          sendResponse({ ok: true, version: TAW_YOUTUBE_VERSION });
           break;
         case "CONTENT_START":
           sendResponse(await startSession(msg.settings || {}));

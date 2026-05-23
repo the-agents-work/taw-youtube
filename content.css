@@ -1,4 +1,4 @@
-/* Echoly in-page overlay — draggable, resizable panel docked to YT page.
+/* TAW YouTube in-page overlay — draggable, resizable panel docked to YT page.
    Uses unique class prefix .ec- to avoid colliding with YT's own classes. */
 
 .ec-root {

@@ -35,7 +35,7 @@
 
   <!-- Wordmark + tagline -->
   <g font-family="-apple-system, system-ui, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#f5f3f0">
-    <text x="148" y="135" font-size="40" font-weight="700" letter-spacing="-1">Echoly</text>
+    <text x="148" y="135" font-size="36" font-weight="700" letter-spacing="0">TAW YouTube</text>
     <text x="148" y="170" font-size="15" font-weight="500" fill="#c8c4be">Live YouTube translation</text>
     <text x="148" y="190" font-size="15" font-weight="500" fill="#c8c4be">in your language.</text>
   </g>

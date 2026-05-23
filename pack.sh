@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# pack.sh — bundle Echoly into a zip ready for Web Store upload or beta sideload.
+# pack.sh — bundle TAW YouTube into a zip ready for Web Store upload or beta sideload.
 # Reads the version from manifest.json so the output filename auto-tracks bumps.
 set -euo pipefail
 
 cd "$(dirname "$0")"
 VERSION=$(node -p "require('./manifest.json').version")
-OUT="$HOME/echoly-v${VERSION}.zip"
+OUT="$HOME/taw-youtube-v${VERSION}.zip"
 
 rm -f "$OUT"
 zip -rq "$OUT" . \
