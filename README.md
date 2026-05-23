@@ -4,6 +4,7 @@ Hear any YouTube video in your language. Live AI dubbing runs in a Chrome MV3 ex
 
 Chrome extension features:
 
+- **Smart captions** — default mode. Reuses YouTube captions when available, translates them ahead of playback, and shows the translated line on the in-page panel without dubbing.
 - **Realtime** — WebRTC connection to OpenAI Realtime for low-latency translated voice-over.
 - **Standard** — chunked pipeline using OpenAI transcription, chat translation, and text-to-speech.
 - 13 target languages.
@@ -24,7 +25,7 @@ Chrome extension features:
 1. Open any YouTube video.
 2. Click the TAW YouTube icon.
 3. Paste your OpenAI API key from <https://platform.openai.com/api-keys>.
-4. Pick a tier, target language, and voice.
+4. Pick a tier and target language. Voice only matters for Realtime and Standard.
 5. Click **Start**.
 6. Drag or resize the in-page translation panel as needed.
 
@@ -38,6 +39,7 @@ popup <--BACKGROUND_STATE_UPDATE-- background <--CONTENT_STATE-- content (YouTub
 - `popup.html` / `popup.js` render settings and send user actions.
 - `background.js` owns session state, persists settings, and injects the content script when needed.
 - `content.js` captures YouTube audio, renders the overlay, and runs the active OpenAI pipeline:
+  - **Smart captions**: gets YouTube caption text and timestamps, translates captions in batches with `chat/completions`, then updates the overlay based on `video.currentTime`.
   - **Realtime**: creates an OpenAI Realtime client secret, opens a WebRTC peer connection, and asks the model to speak only the translated dub.
   - **Standard**: records short audio chunks, re-encodes them as WAV, calls `audio/transcriptions`, translates with `chat/completions`, then plays TTS from `audio/speech`.
 

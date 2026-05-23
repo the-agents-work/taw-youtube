@@ -19,9 +19,10 @@ Hear YouTube videos in your language with OpenAI-powered live dubbing. Bring you
 ## Long Description
 
 ```
-TAW YouTube turns YouTube videos into live translated voice-over in the language you choose. Click the extension icon, paste your OpenAI API key, pick a voice and target language, then press Start.
+TAW YouTube translates YouTube videos in the language you choose. Click the extension icon, paste your OpenAI API key, pick a mode and target language, then press Start.
 
 Features
+• Smart captions mode reuses YouTube captions when available, translates them ahead of playback, and shows the translated line on the page without dubbing.
 • Realtime mode uses OpenAI Realtime over WebRTC for low-latency translated voice.
 • Standard mode records short audio chunks, transcribes them, translates them, and plays OpenAI text-to-speech.
 • 13 target languages: English, Vietnamese, Japanese, Korean, Chinese, French, Spanish, German, Portuguese, Hindi, Indonesian, Italian, Russian.
@@ -42,7 +43,7 @@ Privacy
 ## Single Purpose Statement
 
 ```
-TAW YouTube translates the audio of the YouTube video on the active tab into a language the user picks and plays the translation back as a live voice-over.
+TAW YouTube translates the YouTube video on the active tab into a language the user picks, either by translating available captions or by translating audio.
 ```
 
 ## Permission Justifications
@@ -57,7 +58,7 @@ Used by the background service worker to inject the content script into an exist
 
 ### `storage`
 
-Used to remember the user's OpenAI API key and local preferences such as tier, target language, voice, volume, and source-caption toggle.
+Used to remember the user's OpenAI API key and local preferences such as mode, target language, voice, volume, and source-caption toggle.
 
 ### `webRequest`
 

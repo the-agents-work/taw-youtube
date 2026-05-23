@@ -32,12 +32,12 @@ footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid rgba(127,127
 </div>
 
 <h2>What TAW YouTube is</h2>
-<p>TAW YouTube is a Chrome extension that captures audio from the YouTube video you are watching and produces a translated voice-over in your chosen language. It runs in your browser and has no app server.</p>
+<p>TAW YouTube is a Chrome extension that translates the YouTube video you are watching. Smart captions mode translates existing YouTube captions; Realtime and Standard modes can process audio for voice-over. It runs in your browser and has no app server.</p>
 
 <h2>What data is processed</h2>
 <ul>
   <li><strong>Your OpenAI API key.</strong> Stored locally in <code>chrome.storage.local</code> with <code>TRUSTED_CONTEXTS</code> access level. The key is sent only to <code>api.openai.com</code> for requests you start.</li>
-  <li><strong>YouTube audio.</strong> When you press Start, TAW YouTube captures audio from the active video using <code>HTMLMediaElement.captureStream()</code>. Audio is sent to OpenAI for transcription, translation, and speech generation.</li>
+  <li><strong>YouTube captions and audio.</strong> Smart captions mode fetches caption text and timestamps. Realtime and Standard modes capture audio from the active video using <code>HTMLMediaElement.captureStream()</code>. Captions and audio are sent to OpenAI only for translation and speech generation.</li>
   <li><strong>Overlay layout.</strong> Panel position and size are stored in YouTube-origin <code>localStorage</code>. This is cosmetic only.</li>
   <li><strong>Settings.</strong> Tier, language, voice, and volume preferences are stored locally in Chrome extension storage.</li>
 </ul>

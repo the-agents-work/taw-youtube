@@ -5,7 +5,7 @@
 // canonical state and injects the content script when needed.
 
 const DEFAULT_SETTINGS = {
-  tier: "realtime",
+  tier: "smart",
   targetLanguage: "vi",
   realtimeVoice: "marin",
   standardVoice: "marin",

@@ -43,7 +43,7 @@ let state = {
   running: false,
   connecting: false,
   paused: false,
-  tier: "realtime",
+  tier: "smart",
   targetLanguage: "vi",
   realtimeVoice: "marin",
   standardVoice: "marin",
@@ -114,11 +114,17 @@ function applyState(s) {
     tierBadge.textContent = state.openaiKey?.trim() ? "OpenAI" : "Key needed";
   }
 
-  if (typeof state.tier === "string") tierSelect.value = state.tier === "standard" ? "standard" : "realtime";
+  if (typeof state.tier === "string") {
+    tierSelect.value = ["smart", "standard", "realtime"].includes(state.tier)
+      ? state.tier
+      : "smart";
+  }
   if (typeof state.targetLanguage === "string") langSelect.value = state.targetLanguage;
 
   const activeVoice = tierSelect.value === "standard" ? state.standardVoice : state.realtimeVoice;
   repopulateVoices(activeVoice);
+  voiceSelect.disabled = tierSelect.value === "smart";
+  voiceSelect.closest(".row")?.classList.toggle("is-disabled", tierSelect.value === "smart");
 
   if (typeof state.originalVolume === "number") {
     originalVolumeInput.value = state.originalVolume;
@@ -241,6 +247,8 @@ async function onToggle() {
 tierSelect.addEventListener("change", () => {
   const wanted = tierSelect.value === "standard" ? state.standardVoice : state.realtimeVoice;
   repopulateVoices(wanted);
+  voiceSelect.disabled = tierSelect.value === "smart";
+  voiceSelect.closest(".row")?.classList.toggle("is-disabled", tierSelect.value === "smart");
   pushSettings();
 });
 voiceSelect.addEventListener("change", pushSettings);
@@ -260,6 +268,8 @@ chrome.runtime.onMessage.addListener((message) => {
 
 populateLanguages();
 repopulateVoices(state.realtimeVoice);
+voiceSelect.disabled = true;
+voiceSelect.closest(".row")?.classList.add("is-disabled");
 
 (async () => {
   try {

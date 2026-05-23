@@ -250,12 +250,16 @@
       elements.langSelect.appendChild(opt);
     }
 
-    populateVoicePicker(settings?.tier || "realtime");
+    populateVoicePicker(settings?.tier || "smart");
     elements.langSelect.value = settings?.targetLanguage || "vi";
 
     elements.langSelect.addEventListener("change", () => {
       const newLang = elements.langSelect.value;
-      if (settings?.tier === "standard") {
+      if (settings?.tier === "smart") {
+        settings.targetLanguage = newLang;
+        notifyBackground({ type: "UPDATE_SETTINGS", settings: { targetLanguage: newLang } });
+        showToast("Stop and Start to retranslate captions", 5000);
+      } else if (settings?.tier === "standard") {
         // Standard pipeline picks up the new prompt on the next chunk; no
         // tear-down needed. Push to background so popup stays in sync.
         settings.targetLanguage = newLang;
@@ -292,12 +296,20 @@
     window.addEventListener("resize", applyLayout);
   }
 
-  // Tier-aware voice list rebuild. Realtime exposes 9 OpenAI voices + Auto;
-  // Standard exposes 5 curated Minimax voices. Called from buildOverlay and
+  // Tier-aware voice list rebuild. Realtime and Standard expose OpenAI voices.
+  // Smart captions does not use voice. Called from buildOverlay and
   // on tier change so the dropdown matches the active pipeline.
   function populateVoicePicker(tier) {
     if (!elements.voiceSelect) return;
     elements.voiceSelect.replaceChildren();
+    elements.voiceSelect.disabled = tier === "smart";
+    if (tier === "smart") {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "No voice";
+      elements.voiceSelect.appendChild(opt);
+      return;
+    }
     if (tier === "standard") {
       for (const [id, name] of STANDARD_VOICES) {
         const opt = document.createElement("option");
@@ -1378,6 +1390,7 @@
   // Fallback chain (see startSession router): subtitle-first → standard chunk.
   const SUBFIRST_BATCH_SIZE = 10;        // sentences per translate request
   const SUBFIRST_LOOKAHEAD_MS = 30_000;  // render this far ahead of playhead
+  const SMART_LOOKAHEAD_MS = 90_000;     // captions-only can translate farther ahead
   const SUBFIRST_RENDER_CONCURRENCY = 5; // parallel TTS workers
   const SUBFIRST_GAP_MS = 1500;          // sentence boundary if inter-cue gap > this
   const SUBFIRST_MAX_WORDS = 15;         // OR cumulative words > this
@@ -1931,6 +1944,120 @@
     return { ok: true };
   }
 
+  async function startSmartCaptionSession() {
+    const video = findVideo();
+    if (!video) return { ok: false, error: "No video on this page." };
+    videoEl = video;
+
+    const videoId = getYouTubeVideoId();
+    if (!videoId) return { ok: false, error: "Could not detect YouTube video id." };
+
+    buildOverlay();
+    bindRateChangeWarn(video);
+    setStatusText("Loading captions");
+    setOverlayState("connecting");
+
+    const token = ++pageToken;
+    const abortController = new AbortController();
+    const newSession = {
+      token,
+      type: "smart-captions",
+      stream: null,
+      remoteAudio: null,
+      audioCtx: null,
+      outputGain: null,
+      pc: null,
+      dc: null,
+      openaiKey: settings.openaiKey,
+      abortController,
+      sentences: [],
+      translations: [],
+      renderCursor: 0,
+      stopFlag: false,
+      _displayTimer: null,
+      _onSeeked: null,
+      _onEnded: null,
+    };
+    session = newSession;
+
+    let captionResult;
+    try {
+      captionResult = await fetchYouTubeCaptions(videoId, settings.targetLanguage, abortController.signal);
+    } catch {
+      captionResult = null;
+    }
+    if (token !== pageToken || newSession.stopFlag) return { ok: false, error: "Cancelled." };
+    if (!captionResult || captionResult.captions.length === 0) {
+      session = null;
+      removeOverlay();
+      return {
+        ok: false,
+        error: "No YouTube captions found. Use Realtime or Standard for videos without captions.",
+      };
+    }
+
+    const sentences = regroupToSentences(captionResult.captions);
+    newSession.sentences = sentences;
+    newSession.translations = new Array(sentences.length);
+
+    const currentTime = video.currentTime;
+    const lookaheadSec = SMART_LOOKAHEAD_MS / 1000;
+    let firstStart = sentences.findIndex((s) => s.end >= currentTime);
+    if (firstStart === -1) firstStart = sentences.length;
+    let firstEnd = sentences.findIndex((s) => s.start > currentTime + lookaheadSec);
+    if (firstEnd === -1) firstEnd = sentences.length;
+
+    setStatusText(`Translating ${Math.max(0, firstEnd - firstStart)} lines`);
+    try {
+      await translateBatch(newSession, firstStart, firstEnd);
+    } catch (err) {
+      if (token !== pageToken || newSession.stopFlag) return { ok: false, error: "Cancelled." };
+      session = null;
+      removeOverlay();
+      const msg = err?.user || String(err?.message || err);
+      return { ok: false, error: msg };
+    }
+    if (token !== pageToken || newSession.stopFlag) return { ok: false, error: "Cancelled." };
+
+    newSession.renderCursor = firstEnd;
+    setStatusText("Translating captions");
+    setOverlayState("live");
+    applySourceVisibility();
+    startSessionTimer();
+    updateLiveDisplay(newSession);
+
+    newSession._displayTimer = setInterval(() => updateLiveDisplay(newSession), 250);
+    onYTPause = () => {
+      setStatusText("Paused");
+      setOverlayState("paused");
+      emitState({ paused: true, status: "Paused" });
+    };
+    onYTPlay = () => {
+      setStatusText("Translating captions");
+      setOverlayState("live");
+      emitState({ paused: false, status: "Translating captions" });
+    };
+    const onYTSeeked = () => {
+      const idx = newSession.sentences.findIndex((sent) => sent.end >= video.currentTime);
+      if (idx !== -1 && idx < newSession.renderCursor) newSession.renderCursor = idx;
+      updateLiveDisplay(newSession);
+    };
+    const onYTEnded = () => {
+      stopSession("video-ended");
+      emitEnded("Video ended.");
+    };
+    video.addEventListener("pause", onYTPause);
+    video.addEventListener("play", onYTPlay);
+    video.addEventListener("seeked", onYTSeeked);
+    video.addEventListener("ended", onYTEnded);
+    newSession._onSeeked = onYTSeeked;
+    newSession._onEnded = onYTEnded;
+
+    runSmartCaptionRenderer(newSession);
+    emitState({ running: true, paused: video.paused, status: "Translating captions" });
+    return { ok: true };
+  }
+
   async function translateBatch(s, startIdx, endIdx) {
     const langName = LANG_NAME[settings.targetLanguage] || "Vietnamese";
     for (let i = startIdx; i < endIdx; i += SUBFIRST_BATCH_SIZE) {
@@ -2067,6 +2194,34 @@
     }
   }
 
+  async function runSmartCaptionRenderer(s) {
+    while (s === session && !s.stopFlag) {
+      await new Promise((r) => setTimeout(r, 1000));
+      if (s !== session || s.stopFlag || !videoEl) continue;
+      const t = videoEl.currentTime;
+      const lookaheadSec = SMART_LOOKAHEAD_MS / 1000;
+      let targetIdx = s.sentences.findIndex((sent) => sent.start > t + lookaheadSec);
+      if (targetIdx === -1) targetIdx = s.sentences.length;
+      if (targetIdx <= s.renderCursor) {
+        updateLiveDisplay(s);
+        continue;
+      }
+      const start = s.renderCursor;
+      const end = targetIdx;
+      try {
+        const firstUntranslated = s.translations.findIndex((v, i) => i >= start && i < end && !v);
+        if (firstUntranslated !== -1) {
+          await translateBatch(s, firstUntranslated, end);
+        }
+        if (s !== session || s.stopFlag) return;
+        s.renderCursor = end;
+        updateLiveDisplay(s);
+      } catch {
+        // Retry next tick; keep already translated captions visible.
+      }
+    }
+  }
+
   // ───── Start session (token-bumped on each call) ──────────────────────────
   async function startSession(incomingSettings) {
     if (session) return { ok: false, error: "Session already running." };
@@ -2075,6 +2230,10 @@
     history = [];
     currentTargetText = "";
     currentSourceText = "";
+
+    if (settings.tier === "smart") {
+      return startSmartCaptionSession();
+    }
 
     if (settings.tier === "standard") {
       // Subtitle-first path is YouTube-only in v0.3 and quietly falls back to
@@ -2223,8 +2382,8 @@
     if (videoEl) {
       if (onYTPause) videoEl.removeEventListener("pause", onYTPause);
       if (onYTPlay) videoEl.removeEventListener("play", onYTPlay);
-      // Subtitle-first session has its own seek listener attached on start.
-      if (session?.type === "subtitle-first" && session._onSeeked) {
+      // Caption-based sessions have their own seek listener attached on start.
+      if ((session?.type === "subtitle-first" || session?.type === "smart-captions") && session._onSeeked) {
         try { videoEl.removeEventListener("seeked", session._onSeeked); } catch {}
       }
       // All session types attach an `ended` listener for auto-stop on
@@ -2258,12 +2417,13 @@
             try { session.activeRecorder.stop(); } catch {}
           }
         }
-        if (session.type === "subtitle-first") {
+        if (session.type === "subtitle-first" || session.type === "smart-captions") {
           session.stopFlag = true;
           if (session.abortController) {
             try { session.abortController.abort(); } catch {}
           }
-          cancelPendingSources(session);
+          if (session._displayTimer) clearInterval(session._displayTimer);
+          if (session.type === "subtitle-first") cancelPendingSources(session);
         }
         if (session.remoteAudio) {
           session.remoteAudio.pause();
@@ -2312,9 +2472,9 @@
       else stopCaptionPoll();
     }
     // Realtime swaps require a full session handover (new client_secret +
-    // PeerConnection). Standard pipeline picks up new lang/voice on the next
-    // chunk — no tear-down required.
-    if (session?.type !== "standard") {
+    // PeerConnection). Standard picks up new lang/voice on the next chunk.
+    // Smart captions must be restarted because translated lines are cached.
+    if (session && session.type !== "standard" && session.type !== "smart-captions") {
       if (("targetLanguage" in newSettings && newSettings.targetLanguage !== prev.targetLanguage) ||
           ("realtimeVoice" in newSettings && newSettings.realtimeVoice !== prev.realtimeVoice)) {
         void requestHandover(newSettings);

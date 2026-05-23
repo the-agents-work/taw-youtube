@@ -134,6 +134,9 @@ body[data-state="error"] .dot { background: var(--danger); box-shadow: 0 0 0 4px
   font-weight: 600;
   flex-shrink: 0;
 }
+.row.is-disabled > label {
+  opacity: 0.55;
+}
 
 select, input[type="password"] {
   min-width: 200px;

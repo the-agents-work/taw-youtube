@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "TAW YouTube — Live Translation",
   "short_name": "TAW YouTube",
-  "description": "Hear any YouTube video in your language with OpenAI-powered live dubbing. Bring your own OpenAI API key.",
+  "description": "Translate YouTube videos with smart captions or OpenAI-powered live dubbing. Bring your own OpenAI API key.",
   "version": "0.7.0",
   "minimum_chrome_version": "116",
   "permissions": ["activeTab", "scripting", "storage", "webRequest"],
