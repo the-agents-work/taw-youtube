@@ -1474,7 +1474,7 @@
   // Fallback chain (see startSession router): subtitle-first → standard chunk.
   const SUBFIRST_BATCH_SIZE = 10;        // sentences per translate request
   const SUBFIRST_LOOKAHEAD_MS = 30_000;  // render this far ahead of playhead
-  const SMART_LOOKAHEAD_MS = 90_000;     // captions-only can translate farther ahead
+  const SMART_LOOKAHEAD_MS = 180_000;    // captions-only can translate farther ahead
   const SUBFIRST_RENDER_CONCURRENCY = 5; // parallel TTS workers
   const SUBFIRST_GAP_MS = 1500;          // sentence boundary if inter-cue gap > this
   const SUBFIRST_MAX_WORDS = 15;         // OR cumulative words > this
