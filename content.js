@@ -1153,6 +1153,7 @@
     if (settings.showSource) startCaptionPoll();
 
     onYTPause = () => {
+      if (session?.type === "smart-captions" && session._buffering) return;
       setStatusText("Paused");
       setOverlayState("paused");
       emitState({ paused: true, status: "Paused" });
@@ -1836,6 +1837,7 @@
     bindRateChangeWarn(video);
     setStatusText("Loading captions");
     setOverlayState("connecting");
+    setTargetText("Đang tìm phụ đề tiếng Anh...");
 
     let audioCtx, outputGain;
     try {
@@ -2061,6 +2063,7 @@
       _displayTimer: null,
       _onSeeked: null,
       _onEnded: null,
+      _buffering: true,
     };
     session = newSession;
 
@@ -2093,10 +2096,9 @@
     newSession.sentences = sentences;
     newSession.translations = new Array(sentences.length);
 
-    try {
-      if (!video.paused) video.pause();
-    } catch {}
+    try { video.pause(); } catch {}
     setStatusText("Preparing captions");
+    setTargetText("Đã có phụ đề. Đang dịch trước để đồng bộ...");
     showToast("Có sub rồi. Đang dịch trước một đoạn để đồng bộ...", { kind: "info" }, 5000);
 
     const currentTime = video.currentTime;
@@ -2131,6 +2133,9 @@
     applySourceVisibility();
     startSessionTimer();
     updateLiveDisplay(newSession);
+    if (!currentTargetText) {
+      setTargetText("Sẵn sàng. Video sẽ tiếp tục khi phụ đề đến dòng kế tiếp.");
+    }
 
     newSession._displayTimer = setInterval(() => updateLiveDisplay(newSession), 250);
     onYTPause = () => {
@@ -2159,10 +2164,12 @@
     newSession._onSeeked = onYTSeeked;
     newSession._onEnded = onYTEnded;
 
-    restorePlay();
+    newSession._buffering = false;
+    setStatusText("Captions ready");
+    setTimeout(restorePlay, 0);
     resumeAfterBuffer = false;
     runSmartCaptionRenderer(newSession);
-    emitState({ running: true, paused: video.paused, status: "Translating captions" });
+    emitState({ running: true, paused: false, status: "Captions ready" });
     return { ok: true };
   }
 

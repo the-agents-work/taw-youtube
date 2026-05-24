@@ -22,27 +22,6 @@
     <span id="tier-badge" class="tier-badge" data-tier="free">Key needed</span>
   </header>
 
-  <section id="account-band" class="account-band" data-state="out">
-    <div class="account-out">
-      <span class="account-msg">Paste your OpenAI API key. The key stays in Chrome extension storage on this device.</span>
-      <a href="https://platform.openai.com/api-keys" target="_blank" class="account-link">API keys</a>
-    </div>
-  </section>
-
-  <section class="row">
-    <label for="tier">Tier</label>
-    <select id="tier">
-      <option value="smart">Smart captions · fastest</option>
-      <option value="realtime">Realtime · OpenAI voice · &lt;1s</option>
-      <option value="standard">Standard · chunks · lower cost</option>
-    </select>
-  </section>
-
-  <section class="row">
-    <label for="voice">Voice</label>
-    <select id="voice"></select>
-  </section>
-
   <section class="row">
     <label for="lang">Language</label>
     <select id="lang"></select>
@@ -58,29 +37,11 @@
 
   <button class="action" id="toggle">Start</button>
 
-  <section class="mix">
-    <div class="mix-row">
-      <label for="originalVolume">Original</label>
-      <input id="originalVolume" type="range" min="0" max="100" value="18" />
-      <output id="originalOut">18</output>
-    </div>
-    <div class="mix-row">
-      <label for="voiceVolume">Voice</label>
-      <input id="voiceVolume" type="range" min="0" max="100" value="100" />
-      <output id="voiceOut">100</output>
-    </div>
-  </section>
-
-  <label class="toggle-row">
-    <span>Show English captions</span>
-    <input id="showSource" type="checkbox" />
-  </label>
-
   <details class="advanced">
     <summary>Advanced</summary>
     <div class="advanced-body">
       <div>
-        <strong>OpenAI-only</strong>: Smart translates YouTube captions. Realtime uses OpenAI Realtime. Standard uses OpenAI transcription, chat translation, and TTS.
+        <strong>Smart captions</strong>: finds English YouTube captions, pauses briefly, translates ahead, then shows English + Vietnamese in sync.
       </div>
       <div>
         <a href="https://platform.openai.com/api-keys" target="_blank">API keys</a> ·

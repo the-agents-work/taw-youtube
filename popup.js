@@ -1,55 +1,26 @@
-// TAW YouTube popup — passive renderer. Background owns state.
+// TAW YouTube popup — Smart captions only.
 
 const $ = (id) => document.getElementById(id);
-const tierSelect = $("tier");
-const voiceSelect = $("voice");
 const langSelect = $("lang");
 const openaiKeyInput = $("openaiKey");
 const keyBadge = $("keyBadge");
 const toggleBtn = $("toggle");
 const statusEl = $("status");
-const originalVolumeInput = $("originalVolume");
-const voiceVolumeInput = $("voiceVolume");
-const originalOut = $("originalOut");
-const voiceOut = $("voiceOut");
-const showSourceCheckbox = $("showSource");
 const tierBadge = $("tier-badge");
 
 const LANGUAGES = [
-  ["en", "English"], ["vi", "Vietnamese"], ["ja", "Japanese"],
+  ["vi", "Vietnamese"], ["en", "English"], ["ja", "Japanese"],
   ["ko", "Korean"], ["zh", "Chinese"], ["fr", "French"],
   ["es", "Spanish"], ["de", "German"], ["pt", "Portuguese"],
   ["hi", "Hindi"], ["id", "Indonesian"], ["it", "Italian"],
   ["ru", "Russian"],
 ];
 
-const OPENAI_VOICES = [
-  { id: "marin", name: "Marin" },
-  { id: "alloy", name: "Alloy" },
-  { id: "ash", name: "Ash" },
-  { id: "ballad", name: "Ballad" },
-  { id: "coral", name: "Coral" },
-  { id: "echo", name: "Echo" },
-  { id: "fable", name: "Fable" },
-  { id: "onyx", name: "Onyx" },
-  { id: "nova", name: "Nova" },
-  { id: "sage", name: "Sage" },
-  { id: "shimmer", name: "Shimmer" },
-  { id: "verse", name: "Verse" },
-  { id: "cedar", name: "Cedar" },
-];
-
 let state = {
   running: false,
   connecting: false,
   paused: false,
-  tier: "smart",
   targetLanguage: "vi",
-  realtimeVoice: "marin",
-  standardVoice: "marin",
-  originalVolume: 18,
-  voiceVolume: 100,
-  showSource: true,
   openaiKey: "",
   status: "Ready",
 };
@@ -61,19 +32,6 @@ function populateLanguages() {
     opt.textContent = name;
     langSelect.appendChild(opt);
   }
-}
-
-function repopulateVoices(preferredVoiceId) {
-  voiceSelect.replaceChildren();
-  for (const v of OPENAI_VOICES) {
-    const opt = document.createElement("option");
-    opt.value = v.id;
-    opt.textContent = v.name;
-    voiceSelect.appendChild(opt);
-  }
-  const wanted = preferredVoiceId || "marin";
-  const match = Array.from(voiceSelect.options).some((o) => o.value === wanted);
-  voiceSelect.value = match ? wanted : "marin";
 }
 
 function send(message) {
@@ -107,35 +65,26 @@ function setKeyBadge(k) {
   }
 }
 
+function readSettings() {
+  return {
+    tier: "smart",
+    targetLanguage: langSelect.value,
+    realtimeVoice: "marin",
+    standardVoice: "marin",
+    originalVolume: 100,
+    voiceVolume: 0,
+    showSource: true,
+    openaiKey: openaiKeyInput.value.trim(),
+  };
+}
+
 function applyState(s) {
   state = { ...state, ...s };
   if (tierBadge) {
     tierBadge.dataset.tier = state.openaiKey?.trim() ? "byok" : "free";
     tierBadge.textContent = state.openaiKey?.trim() ? "OpenAI" : "Key needed";
   }
-
-  if (typeof state.tier === "string") {
-    tierSelect.value = ["smart", "standard", "realtime"].includes(state.tier)
-      ? state.tier
-      : "smart";
-  }
   if (typeof state.targetLanguage === "string") langSelect.value = state.targetLanguage;
-
-  const activeVoice = tierSelect.value === "standard" ? state.standardVoice : state.realtimeVoice;
-  repopulateVoices(activeVoice);
-  voiceSelect.disabled = tierSelect.value === "smart";
-  voiceSelect.closest(".row")?.classList.toggle("is-disabled", tierSelect.value === "smart");
-
-  if (typeof state.originalVolume === "number") {
-    originalVolumeInput.value = state.originalVolume;
-    originalOut.textContent = state.originalVolume;
-  }
-  if (typeof state.voiceVolume === "number") {
-    voiceVolumeInput.value = state.voiceVolume;
-    voiceOut.textContent = state.voiceVolume;
-  }
-  if (typeof state.showSource === "boolean") showSourceCheckbox.checked = tierSelect.value === "smart" ? true : state.showSource;
-  showSourceCheckbox.disabled = tierSelect.value === "smart";
   if (typeof state.openaiKey === "string") {
     if (openaiKeyInput.value !== state.openaiKey) openaiKeyInput.value = state.openaiKey;
     setKeyBadge(state.openaiKey);
@@ -143,18 +92,12 @@ function applyState(s) {
 
   if (state.connecting) {
     setStateClass("connecting");
-    statusEl.textContent = state.status || "Connecting";
-    toggleBtn.textContent = "Stop";
-    toggleBtn.classList.add("is-live");
-  } else if (state.running && state.paused) {
-    setStateClass("paused");
-    statusEl.textContent = "Paused.";
+    statusEl.textContent = state.status || "Finding captions...";
     toggleBtn.textContent = "Stop";
     toggleBtn.classList.add("is-live");
   } else if (state.running) {
     setStateClass("active");
-    const langName = LANGUAGES.find(([c]) => c === state.targetLanguage)?.[1] || state.targetLanguage;
-    statusEl.textContent = `Translating to ${langName}.`;
+    statusEl.textContent = state.status || "Captions ready.";
     toggleBtn.textContent = "Stop";
     toggleBtn.classList.add("is-live");
   } else if (state.errorMessage) {
@@ -165,26 +108,12 @@ function applyState(s) {
   } else {
     setStateClass("idle");
     statusEl.textContent = state.openaiKey?.trim()
-      ? "Ready."
+      ? "Ready. Open a YouTube video and press Start."
       : "Paste an OpenAI API key to start.";
     toggleBtn.textContent = "Start";
     toggleBtn.classList.remove("is-live");
   }
   toggleBtn.disabled = false;
-}
-
-function readSettings() {
-  const tier = tierSelect.value;
-  const voiceKey = tier === "standard" ? "standardVoice" : "realtimeVoice";
-  return {
-    tier,
-    targetLanguage: langSelect.value,
-    [voiceKey]: voiceSelect.value,
-    originalVolume: Number(originalVolumeInput.value),
-    voiceVolume: Number(voiceVolumeInput.value),
-    showSource: tier === "smart" ? true : showSourceCheckbox.checked,
-    openaiKey: openaiKeyInput.value.trim(),
-  };
 }
 
 async function pushSettings() {
@@ -197,20 +126,6 @@ async function pushSettings() {
       setStateClass("error");
     }
   }
-}
-
-let volumeDebounce = null;
-function onVolumeChange() {
-  originalOut.textContent = originalVolumeInput.value;
-  voiceOut.textContent = voiceVolumeInput.value;
-  clearTimeout(volumeDebounce);
-  volumeDebounce = setTimeout(() => {
-    chrome.runtime.sendMessage({
-      type: "UPDATE_VOLUME",
-      originalVolume: Number(originalVolumeInput.value),
-      voiceVolume: Number(voiceVolumeInput.value),
-    }).catch(() => {});
-  }, 60);
 }
 
 async function onToggle() {
@@ -228,6 +143,8 @@ async function onToggle() {
         toggleBtn.disabled = false;
         return;
       }
+      statusEl.textContent = "Finding captions...";
+      setStateClass("connecting");
       const reply = await send({ type: "START", settings });
       if (!reply?.ok) {
         statusEl.textContent = reply?.error || "Could not start.";
@@ -245,22 +162,9 @@ async function onToggle() {
   }
 }
 
-tierSelect.addEventListener("change", () => {
-  const wanted = tierSelect.value === "standard" ? state.standardVoice : state.realtimeVoice;
-  repopulateVoices(wanted);
-  voiceSelect.disabled = tierSelect.value === "smart";
-  voiceSelect.closest(".row")?.classList.toggle("is-disabled", tierSelect.value === "smart");
-  showSourceCheckbox.checked = tierSelect.value === "smart" ? true : showSourceCheckbox.checked;
-  showSourceCheckbox.disabled = tierSelect.value === "smart";
-  pushSettings();
-});
-voiceSelect.addEventListener("change", pushSettings);
 langSelect.addEventListener("change", pushSettings);
-showSourceCheckbox.addEventListener("change", pushSettings);
 openaiKeyInput.addEventListener("input", () => setKeyBadge(openaiKeyInput.value.trim()));
 openaiKeyInput.addEventListener("change", pushSettings);
-originalVolumeInput.addEventListener("input", onVolumeChange);
-voiceVolumeInput.addEventListener("input", onVolumeChange);
 toggleBtn.addEventListener("click", onToggle);
 
 chrome.runtime.onMessage.addListener((message) => {
@@ -270,11 +174,6 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 populateLanguages();
-repopulateVoices(state.realtimeVoice);
-voiceSelect.disabled = true;
-voiceSelect.closest(".row")?.classList.add("is-disabled");
-showSourceCheckbox.checked = true;
-showSourceCheckbox.disabled = true;
 
 (async () => {
   try {
