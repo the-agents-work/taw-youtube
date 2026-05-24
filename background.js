@@ -71,6 +71,8 @@ const state = {
   ...DEFAULT_SETTINGS,
 };
 
+let autoRestartTimer = null;
+
 chrome.storage.local
   .setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" })
   .catch(() => {});
@@ -100,10 +102,22 @@ function isYouTubeUrl(url) {
   return typeof url === "string" && /^https?:\/\/[^/]*youtube\.com\//.test(url);
 }
 
-async function activeYouTubeTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+function isYouTubeWatchUrl(url) {
+  try {
+    const u = new URL(url);
+    return /(^|\.)youtube\.com$/.test(u.hostname) && u.pathname === "/watch" && !!u.searchParams.get("v");
+  } catch {
+    return false;
+  }
+}
+
+async function activeYouTubeTab(preferredTabId = null) {
+  const tab = preferredTabId
+    ? await chrome.tabs.get(preferredTabId)
+    : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
   if (!tab) throw new Error("No active tab.");
   if (!isYouTubeUrl(tab.url)) throw new Error("Open a YouTube video first.");
+  if (!isYouTubeWatchUrl(tab.url)) throw new Error("Open a YouTube video first.");
   return tab;
 }
 
@@ -149,7 +163,25 @@ function resolveApiMode(settings) {
   return { apiBase: OPENAI_API_BASE, apiKey: openaiKey, mode: "openai" };
 }
 
-async function handleStart(settings) {
+function clearAutoRestart() {
+  if (autoRestartTimer) {
+    clearTimeout(autoRestartTimer);
+    autoRestartTimer = null;
+  }
+}
+
+function scheduleAutoRestart(tabId) {
+  clearAutoRestart();
+  autoRestartTimer = setTimeout(async () => {
+    autoRestartTimer = null;
+    if (state.tabId !== tabId) return;
+    if (!state.openaiKey?.trim()) return;
+    if (state.running || state.connecting) return;
+    await handleStart(snapshot(), tabId);
+  }, 900);
+}
+
+async function handleStart(settings, preferredTabId = null) {
   if (state.running || state.connecting) {
     return { ok: false, error: "Session already running." };
   }
@@ -167,7 +199,7 @@ async function handleStart(settings) {
 
   let tab;
   try {
-    tab = await activeYouTubeTab();
+    tab = await activeYouTubeTab(preferredTabId);
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -193,7 +225,7 @@ async function handleStart(settings) {
     }
     state.connecting = false;
     state.running = true;
-    state.status = "Translating";
+    state.status = state.status && state.status !== "Connecting" ? state.status : "Translating";
     broadcastToPopup();
     return { ok: true, state: snapshot() };
   } catch (err) {
@@ -207,6 +239,7 @@ async function handleStart(settings) {
 }
 
 async function handleStop() {
+  clearAutoRestart();
   const tabId = state.tabId;
   state.running = false;
   state.connecting = false;
@@ -220,6 +253,32 @@ async function handleStop() {
   }
   state.tabId = null;
   return { ok: true, state: snapshot() };
+}
+
+async function handleVideoNavigation(tabId, url) {
+  if (tabId !== state.tabId) return;
+  const shouldRestart = state.running || state.connecting;
+  clearAutoRestart();
+  try {
+    await relayToContent(tabId, { type: "CONTENT_STOP" });
+  } catch {}
+
+  state.running = false;
+  state.connecting = false;
+  state.paused = false;
+  state.errorMessage = "";
+
+  if (shouldRestart && isYouTubeWatchUrl(url) && state.openaiKey?.trim()) {
+    state.tabId = tabId;
+    state.status = "Opening video";
+    broadcastToPopup();
+    scheduleAutoRestart(tabId);
+    return;
+  }
+
+  state.tabId = null;
+  state.status = shouldRestart ? "Open a YouTube video first." : "Stopped";
+  broadcastToPopup();
 }
 
 async function handleUpdateSettings(settings) {
@@ -271,12 +330,17 @@ async function handleUpdateVolume(originalVolume, voiceVolume) {
 function handleContentEvent(message) {
   if (message.type === "CONTENT_STATE") {
     if (typeof message.running === "boolean") state.running = message.running;
+    if (typeof message.connecting === "boolean") state.connecting = message.connecting;
     if (typeof message.paused === "boolean") state.paused = message.paused;
     if (typeof message.status === "string") state.status = message.status;
     if (typeof message.errorMessage === "string") state.errorMessage = message.errorMessage;
     broadcastToPopup();
   }
+  if (message.type === "CONTENT_NAVIGATED") {
+    void handleVideoNavigation(message.tabId, message.url);
+  }
   if (message.type === "CONTENT_ENDED") {
+    clearAutoRestart();
     state.running = false;
     state.connecting = false;
     state.paused = false;
@@ -294,6 +358,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (sender.tab) {
+    if (message?.type === "CONTENT_NAVIGATED") message.tabId = sender.tab.id;
     handleContentEvent(message);
     sendResponse?.({ ok: true });
     return false;
@@ -338,7 +403,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (tabId !== state.tabId) return;
   if (!changeInfo.url) return;
-  void handleStop();
+  void handleVideoNavigation(tabId, changeInfo.url);
 });
 
 void loadSettings();

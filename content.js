@@ -270,15 +270,17 @@
         requestHandover({ targetLanguage: newLang });
       }
     });
-    elements.voiceSelect.addEventListener("change", () => {
-      const newVoice = elements.voiceSelect.value;
-      if (settings?.tier === "standard") {
-        settings.standardVoice = newVoice;
-        notifyBackground({ type: "UPDATE_SETTINGS", settings: { standardVoice: newVoice } });
-      } else {
-        requestHandover({ realtimeVoice: newVoice });
-      }
-    });
+    if (elements.voiceSelect) {
+      elements.voiceSelect.addEventListener("change", () => {
+        const newVoice = elements.voiceSelect.value;
+        if (settings?.tier === "standard") {
+          settings.standardVoice = newVoice;
+          notifyBackground({ type: "UPDATE_SETTINGS", settings: { standardVoice: newVoice } });
+        } else {
+          requestHandover({ realtimeVoice: newVoice });
+        }
+      });
+    }
     elements.hideBtn.addEventListener("click", () => {
       layout.sideCollapsed = !layout.sideCollapsed;
       saveLayout();
@@ -2057,9 +2059,16 @@
       abortController,
       sentences: [],
       translations: [],
+      domCaptionCache: new Map(),
+      domCaptionPending: new Set(),
+      lastDomCaption: "",
       renderCursor: 0,
       stopFlag: false,
       _displayTimer: null,
+      _domPollTimer: null,
+      _domFallbackStartedAt: 0,
+      _domFallbackSawCaption: false,
+      _domFallbackFailIfEmpty: false,
       _onSeeked: null,
       _onEnded: null,
       _buffering: true,
@@ -2082,13 +2091,37 @@
     }
     if (token !== pageToken || newSession.stopFlag) return { ok: false, error: "Cancelled." };
     if (!captionResult || captionResult.captions.length === 0) {
-      session = null;
-      removeOverlay();
-      restorePlay();
-      return {
-        ok: false,
-        error: "No YouTube captions found. Use Realtime or Standard for videos without captions.",
+      setStatusText("Reading visible captions");
+      setOverlayState("connecting");
+      setTargetText("Không lấy được track phụ đề. Đang đọc phụ đề đang hiện trên YouTube...");
+      applySourceVisibility();
+      startSessionTimer();
+      startDomCaptionFallback(newSession, { failIfEmpty: true });
+
+      onYTPause = () => {
+        setStatusText("Paused");
+        setOverlayState("paused");
+        emitState({ paused: true, status: "Paused" });
       };
+      onYTPlay = () => {
+        setStatusText("Reading visible captions");
+        setOverlayState("connecting");
+        emitState({ paused: false, status: "Reading visible captions" });
+      };
+      const onYTEnded = () => {
+        stopSession("video-ended");
+        emitEnded("Video ended.");
+      };
+      video.addEventListener("pause", onYTPause);
+      video.addEventListener("play", onYTPlay);
+      video.addEventListener("ended", onYTEnded);
+      newSession._onEnded = onYTEnded;
+
+      newSession._buffering = false;
+      restorePlay();
+      resumeAfterBuffer = false;
+      emitState({ running: true, paused: video.paused, status: "Reading visible captions" });
+      return { ok: true };
     }
 
     const sentences = regroupToSentences(captionResult.captions);
@@ -2261,18 +2294,137 @@
     if (!videoEl || !elements.target) return;
     const t = videoEl.currentTime;
     const idx = s.sentences.findIndex((sent) => sent.start <= t && sent.end >= t);
-    if (idx === -1) return;
+    if (idx === -1) {
+      const visible = readYTCaptions();
+      if (visible) void translateVisibleCaptionLine(s, visible);
+      return;
+    }
     const translated = s.translations[idx];
     const source = s.sentences[idx].text;
     if (translated) {
       currentTargetText = translated;
       setTargetText(translated);
+    } else if (!currentTargetText) {
+      setTargetText("Đang dịch dòng phụ đề này...");
     }
     currentSourceText = source;
     if (elements.source && (settings.showSource || s.type === "smart-captions")) {
       elements.source.hidden = false;
       renderSourceText(source.slice(-260), s.type === "smart-captions");
     }
+  }
+
+  function startDomCaptionFallback(s, opts = {}) {
+    if (s._domPollTimer) return;
+    s._domFallbackStartedAt = Date.now();
+    s._domFallbackSawCaption = false;
+    s._domFallbackFailIfEmpty = !!opts.failIfEmpty;
+    s._domPollTimer = setInterval(() => {
+      if (s !== session || s.stopFlag) return;
+      const text = readYTCaptions();
+      if (text) {
+        s._domFallbackSawCaption = true;
+        void translateVisibleCaptionLine(s, text);
+        return;
+      }
+      if (
+        s._domFallbackFailIfEmpty &&
+        !s._domFallbackSawCaption &&
+        Date.now() - s._domFallbackStartedAt > 8000
+      ) {
+        failSmartCaptions(
+          s,
+          "Không đọc được phụ đề của video này. Bật CC trên YouTube rồi bấm Start lại, hoặc bỏ qua video này.",
+        );
+      }
+    }, 500);
+  }
+
+  async function translateVisibleCaptionLine(s, text) {
+    const source = String(text || "").trim().replace(/\s+/g, " ");
+    if (!source || s !== session || s.stopFlag) return;
+    if (source === s.lastDomCaption && currentTargetText) return;
+    s.lastDomCaption = source;
+    currentSourceText = source;
+    if (elements.source && (settings.showSource || s.type === "smart-captions")) {
+      elements.source.hidden = false;
+      renderSourceText(source.slice(-260), true);
+    }
+
+    const langName = LANG_NAME[settings.targetLanguage] || "Vietnamese";
+    const key = `${settings.targetLanguage || "vi"}|${source}`;
+    if (s.domCaptionCache?.has(key)) {
+      const cached = s.domCaptionCache.get(key);
+      currentTargetText = cached;
+      setTargetText(cached);
+      setStatusText("Live captions");
+      setOverlayState("live");
+      emitState({ running: true, paused: !!videoEl?.paused, status: "Live captions" });
+      return;
+    }
+    if (s.domCaptionPending?.has(key)) return;
+    s.domCaptionPending?.add(key);
+    setStatusText("Translating visible caption");
+    setOverlayState("connecting");
+    if (!currentTargetText) setTargetText("Đang dịch phụ đề đang hiện trên YouTube...");
+
+    try {
+      const translated = (await batchTranslateSubtitles(
+        [{ text: source }],
+        langName,
+        s.openaiKey,
+        s.abortController.signal,
+      ))[0];
+      if (s !== session || s.stopFlag || !translated) return;
+      s.domCaptionCache?.set(key, translated);
+      currentTargetText = translated;
+      setTargetText(translated);
+      setStatusText("Live captions");
+      setOverlayState("live");
+      emitState({ running: true, paused: !!videoEl?.paused, status: "Live captions" });
+    } catch (err) {
+      if (s !== session || s.stopFlag) return;
+      const msg = err?.user || "Không dịch được phụ đề hiện tại.";
+      failSmartCaptions(s, msg);
+    } finally {
+      s.domCaptionPending?.delete(key);
+    }
+  }
+
+  function failSmartCaptions(s, message) {
+    if (s !== session || s.stopFlag) return;
+    s.stopFlag = true;
+    if (s.abortController) {
+      try { s.abortController.abort(); } catch {}
+    }
+    if (s._displayTimer) {
+      clearInterval(s._displayTimer);
+      s._displayTimer = null;
+    }
+    if (s._domPollTimer) {
+      clearInterval(s._domPollTimer);
+      s._domPollTimer = null;
+    }
+    setStatusText("No captions");
+    setOverlayState("error");
+    setTargetText(message);
+    renderSourceText("", false);
+    showToast(message, { kind: "info" }, 8000);
+    emitState({ running: false, connecting: false, paused: false, status: message, errorMessage: message });
+    clearSessionTimer();
+    if (videoEl) {
+      if (onYTPause) videoEl.removeEventListener("pause", onYTPause);
+      if (onYTPlay) videoEl.removeEventListener("play", onYTPlay);
+      if (s._onSeeked) {
+        try { videoEl.removeEventListener("seeked", s._onSeeked); } catch {}
+      }
+      if (s._onEnded) {
+        try { videoEl.removeEventListener("ended", s._onEnded); } catch {}
+      }
+    }
+    onYTPause = null;
+    onYTPlay = null;
+    if (session === s) session = null;
   }
 
   async function runRollingRenderer(s) {
@@ -2538,6 +2690,7 @@
             try { session.abortController.abort(); } catch {}
           }
           if (session._displayTimer) clearInterval(session._displayTimer);
+          if (session._domPollTimer) clearInterval(session._domPollTimer);
           if (session.type === "subtitle-first") cancelPendingSources(session);
         }
         if (session.remoteAudio) {
@@ -2609,7 +2762,7 @@
       lastSpaUrl = location.href;
       if (session) {
         stopSession("yt-navigation");
-        emitEnded("YouTube navigated.");
+        notifyBackground({ type: "CONTENT_NAVIGATED", url: location.href });
       }
     }
   }, 500);
