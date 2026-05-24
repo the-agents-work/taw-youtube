@@ -2064,6 +2064,14 @@
     };
     session = newSession;
 
+    const wasPlaying = !video.paused;
+    let resumeAfterBuffer = wasPlaying;
+    const restorePlay = () => {
+      if (resumeAfterBuffer && video.paused) {
+        try { video.play().catch(() => {}); } catch {}
+      }
+    };
+
     let captionResult;
     try {
       captionResult = await fetchYouTubeCaptions(videoId, settings.targetLanguage, abortController.signal);
@@ -2074,6 +2082,7 @@
     if (!captionResult || captionResult.captions.length === 0) {
       session = null;
       removeOverlay();
+      restorePlay();
       return {
         ok: false,
         error: "No YouTube captions found. Use Realtime or Standard for videos without captions.",
@@ -2083,6 +2092,12 @@
     const sentences = regroupToSentences(captionResult.captions);
     newSession.sentences = sentences;
     newSession.translations = new Array(sentences.length);
+
+    try {
+      if (!video.paused) video.pause();
+    } catch {}
+    setStatusText("Preparing captions");
+    showToast("Có sub rồi. Đang dịch trước một đoạn để đồng bộ...", { kind: "info" }, 5000);
 
     const currentTime = video.currentTime;
     const lookaheadSec = SMART_LOOKAHEAD_MS / 1000;
@@ -2095,13 +2110,20 @@
     try {
       await translateBatch(newSession, firstStart, firstEnd);
     } catch (err) {
-      if (token !== pageToken || newSession.stopFlag) return { ok: false, error: "Cancelled." };
+      if (token !== pageToken || newSession.stopFlag) {
+        restorePlay();
+        return { ok: false, error: "Cancelled." };
+      }
       session = null;
       removeOverlay();
+      restorePlay();
       const msg = err?.user || String(err?.message || err);
       return { ok: false, error: msg };
     }
-    if (token !== pageToken || newSession.stopFlag) return { ok: false, error: "Cancelled." };
+    if (token !== pageToken || newSession.stopFlag) {
+      restorePlay();
+      return { ok: false, error: "Cancelled." };
+    }
 
     newSession.renderCursor = firstEnd;
     setStatusText("Translating captions");
@@ -2137,6 +2159,8 @@
     newSession._onSeeked = onYTSeeked;
     newSession._onEnded = onYTEnded;
 
+    restorePlay();
+    resumeAfterBuffer = false;
     runSmartCaptionRenderer(newSession);
     emitState({ running: true, paused: video.paused, status: "Translating captions" });
     return { ok: true };

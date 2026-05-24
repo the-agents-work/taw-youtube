@@ -4,7 +4,7 @@ Hear any YouTube video in your language. Live AI dubbing runs in a Chrome MV3 ex
 
 Chrome extension features:
 
-- **Smart captions** — default mode. Reuses English YouTube captions when available, translates them ahead of playback, and shows English + Vietnamese together without dubbing.
+- **Smart captions** — default mode. Reuses English YouTube captions when available, briefly pauses to pre-translate a buffer, then shows English + Vietnamese together without dubbing.
 - Click any English word in Smart captions to see a short Vietnamese meaning in context.
 - **Realtime** — WebRTC connection to OpenAI Realtime for low-latency translated voice-over.
 - **Standard** — chunked pipeline using OpenAI transcription, chat translation, and text-to-speech.
