@@ -7,7 +7,7 @@
 
 (() => {
   // ───── F9 — Idempotent version guard ──────────────────────────────────────
-  const TAW_YOUTUBE_VERSION = "0.7.0";
+  const TAW_YOUTUBE_VERSION = "0.7.1";
   const GLOBAL_KEY = "__tawYoutubeContentVersion";
   if (window[GLOBAL_KEY] === TAW_YOUTUBE_VERSION) return;
   // Older copy may have left UI behind; clean up before re-installing listeners.
@@ -233,7 +233,6 @@
     elements = {
       status: root.querySelector("[data-ec-status]"),
       langSelect: root.querySelector("[data-ec-language]"),
-      voiceSelect: root.querySelector("[data-ec-voice]"),
       target: root.querySelector("[data-ec-target]"),
       source: root.querySelector("[data-ec-source]"),
       history: root.querySelector("[data-ec-history]"),
@@ -250,7 +249,6 @@
       elements.langSelect.appendChild(opt);
     }
 
-    populateVoicePicker(settings?.tier || "smart");
     elements.langSelect.value = settings?.targetLanguage || "vi";
 
     elements.langSelect.addEventListener("change", () => {
@@ -270,17 +268,6 @@
         requestHandover({ targetLanguage: newLang });
       }
     });
-    if (elements.voiceSelect) {
-      elements.voiceSelect.addEventListener("change", () => {
-        const newVoice = elements.voiceSelect.value;
-        if (settings?.tier === "standard") {
-          settings.standardVoice = newVoice;
-          notifyBackground({ type: "UPDATE_SETTINGS", settings: { standardVoice: newVoice } });
-        } else {
-          requestHandover({ realtimeVoice: newVoice });
-        }
-      });
-    }
     elements.hideBtn.addEventListener("click", () => {
       layout.sideCollapsed = !layout.sideCollapsed;
       saveLayout();
@@ -301,40 +288,6 @@
     applyLayout();
 
     window.addEventListener("resize", applyLayout);
-  }
-
-  // Tier-aware voice list rebuild. Realtime and Standard expose OpenAI voices.
-  // Smart captions does not use voice. Called from buildOverlay and
-  // on tier change so the dropdown matches the active pipeline.
-  function populateVoicePicker(tier) {
-    if (!elements.voiceSelect) return;
-    elements.voiceSelect.replaceChildren();
-    elements.voiceSelect.disabled = tier === "smart";
-    if (tier === "smart") {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "No voice";
-      elements.voiceSelect.appendChild(opt);
-      return;
-    }
-    if (tier === "standard") {
-      for (const [id, name] of STANDARD_VOICES) {
-        const opt = document.createElement("option");
-        opt.value = id; opt.textContent = name;
-        elements.voiceSelect.appendChild(opt);
-      }
-      elements.voiceSelect.value = settings?.standardVoice || STANDARD_DEFAULT_VOICE;
-    } else {
-      const autoOpt = document.createElement("option");
-      autoOpt.value = ""; autoOpt.textContent = "Auto";
-      elements.voiceSelect.appendChild(autoOpt);
-      for (const v of REALTIME_VOICES) {
-        const opt = document.createElement("option");
-        opt.value = v; opt.textContent = v.charAt(0).toUpperCase() + v.slice(1);
-        elements.voiceSelect.appendChild(opt);
-      }
-      elements.voiceSelect.value = settings?.realtimeVoice ?? "marin";
-    }
   }
 
   function setOverlayState(state) {
@@ -1032,7 +985,6 @@
     settings = newSettings;
     notifyBackground({ type: "UPDATE_SETTINGS", settings: newSettings });
     if (elements.langSelect) elements.langSelect.value = newSettings.targetLanguage;
-    if (elements.voiceSelect) elements.voiceSelect.value = newSettings.realtimeVoice || "";
 
     let newSession;
     try {
@@ -2726,13 +2678,6 @@
     }
     if (elements.langSelect && newSettings.targetLanguage) {
       elements.langSelect.value = newSettings.targetLanguage;
-    }
-    // Voice select shape depends on tier — repopulate before assigning value
-    // so the new id exists in the dropdown.
-    if (elements.voiceSelect &&
-        (newSettings.realtimeVoice !== undefined || newSettings.standardVoice !== undefined)) {
-      const tier = settings.tier || "realtime";
-      populateVoicePicker(tier);
     }
     if ("showSource" in newSettings) {
       applySourceVisibility();

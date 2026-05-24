@@ -3,7 +3,7 @@
   "name": "TAW YouTube — Dual Subtitles",
   "short_name": "TAW YouTube",
   "description": "Show English and translated YouTube captions together, with quick word lookup. Bring your own OpenAI API key.",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "minimum_chrome_version": "116",
   "permissions": ["activeTab", "scripting", "storage", "webRequest"],
   "content_security_policy": {
