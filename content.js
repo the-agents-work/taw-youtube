@@ -207,16 +207,15 @@
         </span>
         <span class="ec-spacer"></span>
         <select class="ec-select" data-ec-language aria-label="Target language"></select>
-        <select class="ec-select" data-ec-voice aria-label="Voice"></select>
         <button class="ec-btn" type="button" data-ec-hide>Hide</button>
         <button class="ec-btn ec-btn-primary" type="button" data-ec-stop>Stop</button>
       </div>
       <div class="ec-body">
         <div class="ec-main">
           <div class="ec-target" data-ec-target></div>
+          <div class="ec-source" data-ec-source hidden></div>
         </div>
         <div class="ec-side" data-ec-side>
-          <div class="ec-source" data-ec-source hidden></div>
           <div class="ec-history" data-ec-history hidden></div>
         </div>
       </div>

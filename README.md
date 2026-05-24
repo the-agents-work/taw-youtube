@@ -4,7 +4,7 @@ Hear any YouTube video in your language. Live AI dubbing runs in a Chrome MV3 ex
 
 Chrome extension features:
 
-- **Smart captions** — default mode. Reuses English YouTube captions when available, briefly pauses to pre-translate a buffer, then shows English + Vietnamese together without dubbing.
+- **Smart captions** — default mode. Reuses English YouTube captions when available, briefly pauses to pre-translate a buffer, then shows large Vietnamese captions with smaller English below.
 - Click any English word in Smart captions to see a short Vietnamese meaning in context.
 - 13 target languages.
 - No app server, account system, analytics, or telemetry.
@@ -38,7 +38,7 @@ popup <--BACKGROUND_STATE_UPDATE-- background <--CONTENT_STATE-- content (YouTub
 - `popup.html` / `popup.js` render settings and send user actions.
 - `background.js` owns session state, persists settings, and injects the content script when needed.
 - `content.js` renders the overlay and runs the OpenAI caption translation pipeline:
-  - **Smart captions**: gets English YouTube caption text and timestamps, translates captions in batches with `chat/completions`, then updates the dual-sub overlay based on `video.currentTime`.
+  - **Smart captions**: gets English YouTube caption text and timestamps, translates captions in batches with `chat/completions`, keeps translating a rolling lookahead buffer while playback continues, then updates the dual-sub overlay based on `video.currentTime`.
 
 ## Privacy
 
